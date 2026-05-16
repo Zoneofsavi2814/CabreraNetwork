@@ -1,0 +1,33 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>Cabrera Network</title>
+    <link rel="preconnect" href="https://fonts.googleapis.com" />
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+    <link href="https://fonts.googleapis.com/css2?family=Geist:wght@300;400;500;600;700&family=Geist+Mono:wght@400;500;600&display=swap" rel="stylesheet" />
+    <script>
+      (() => {
+        const showBootError = (message) => {
+          const root = document.getElementById("root");
+          if (!root) return;
+          root.innerHTML = `<div style="font:13px ui-monospace, SFMono-Regular, Menlo, monospace; color:#fda4af; background:#060912; min-height:100vh; padding:24px; white-space:pre-wrap;">Dashboard failed to boot:\n${String(message).replace(/[<>&]/g, (c) => ({ "<": "&lt;", ">": "&gt;", "&": "&amp;" }[c]))}</div>`;
+        };
+        window.addEventListener("error", (event) => showBootError(event.error?.stack || event.message));
+        window.addEventListener("unhandledrejection", (event) => showBootError(event.reason?.stack || event.reason));
+      })();
+    </script>
+  </head>
+  <body>
+    <div id="root">
+      <div style="font:13px ui-monospace, SFMono-Regular, Menlo, monospace; color:#94a3b8; background:#060912; min-height:100vh; padding:24px;">
+        Loading Cabrera Network...
+        <noscript>
+          JavaScript is disabled in this browser. Enable JavaScript to run the live dashboard.
+        </noscript>
+      </div>
+    </div>
+    <script type="module" src="/src/main.jsx"></script>
+  </body>
+</html>
