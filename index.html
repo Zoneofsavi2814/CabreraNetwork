@@ -12,7 +12,7 @@
         const showBootError = (message) => {
           const root = document.getElementById("root");
           if (!root) return;
-          root.innerHTML = `<div style="font:13px ui-monospace, SFMono-Regular, Menlo, monospace; color:#fda4af; background:#060912; min-height:100vh; padding:24px; white-space:pre-wrap;">Dashboard failed to boot:\n${String(message).replace(/[<>&]/g, (c) => ({ "<": "&lt;", ">": "&gt;", "&": "&amp;" }[c]))}</div>`;
+          root.innerHTML = `<div style="font:13px ui-monospace, SFMono-Regular, Menlo, monospace; color:#e57373; background:#000; min-height:100vh; padding:24px; white-space:pre-wrap;">Dashboard failed to boot:\n${String(message).replace(/[<>&]/g, (c) => ({ "<": "&lt;", ">": "&gt;", "&": "&amp;" }[c]))}</div>`;
         };
         window.addEventListener("error", (event) => showBootError(event.error?.stack || event.message));
         window.addEventListener("unhandledrejection", (event) => showBootError(event.reason?.stack || event.reason));
@@ -21,8 +21,8 @@
   </head>
   <body>
     <div id="root">
-      <div style="font:13px ui-monospace, SFMono-Regular, Menlo, monospace; color:#94a3b8; background:#060912; min-height:100vh; padding:24px;">
-        Loading Cabrera Network...
+      <div style="font:13px ui-monospace, SFMono-Regular, Menlo, monospace; color:#7a9a8a; background:#000; min-height:100vh; padding:24px;">
+        &gt; LOADING CABRERA NETWORK...
         <noscript>
           JavaScript is disabled in this browser. Enable JavaScript to run the live dashboard.
         </noscript>

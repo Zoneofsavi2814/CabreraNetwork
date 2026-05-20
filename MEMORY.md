@@ -33,10 +33,12 @@
   - Coinbot-Mission-Control: `http://192.168.0.101:8088/`
   - GRID Wiki: `http://192.168.0.101:8090/`
   - GRID protected listener/API: `http://192.168.0.101:7777/`
+  - Esty: `http://192.168.0.101:8095/`
 - Rootful Podman workloads shown in the GUI are app containers only. Podman infra/pause containers are hidden because they are implementation details of pods.
 - `localhost/podman-pause:4.3.1-0` is Podman’s required pod infra image; do not delete it while the pod exists.
 - Coinbot and Mission Control run in rootful Podman pod `cabrera-mission-control`.
 - The Mission Control container is named `Coinbot-Mission-Control`; Coinbot container is named `coinbot`.
+- Esty is managed as `container-esty.service`, publishes port `8095`, and should appear in Services, Containers, and Web Apps when discovered live. Mock fallback data includes the same service/container/web-app entries.
 
 ## Deployment And Validation
 
@@ -50,11 +52,20 @@
   - `/api/session` returns `200` with `authenticated: false` before login
   - the Web Apps panel lists the current LAN links
   - the Podman list hides infra/pause containers and shows `Coinbot-Mission-Control`
+  - Esty shows as `container-esty.service`, has port `8095` listening, and opens `http://192.168.0.101:8095/`
+
+## Remote Access
+
+- Remote access is private through Tailscale; do not add router port forwarding for the dashboard.
+- Pi4 is configured as the subnet router for `192.168.0.0/24`, so approved tailnet devices can use the normal LAN URL `http://192.168.0.101/` away from home.
+- The full subnet route keeps existing Web Apps links usable remotely: AdGuard `:8080`, Uptime Kuma `:3001`, Coinbot-Mission-Control `:8088`, GRID `:8090`, and Esty `:8095`.
+- Linux clients may need `sudo tailscale set --accept-routes`; macOS, iOS, Windows, and Android normally pick up approved subnet routes automatically.
 
 ## Related Systems
 
 - AdGuard Home is active on DNS port `53` and admin UI port `8080`.
 - Uptime Kuma is managed by `container-uptime-kuma.service` and listens on port `3001`.
+- Esty is managed by `container-esty.service` and listens on port `8095`.
 - GRID is managed by `grid.service`, publishing `8090:8080` and `7777:7777`.
-- k3s, Samba, SSH, AdGuard, Podman, and Uptime Kuma are intentionally observed/controlled through fixed allowlists only.
+- k3s, Samba, SSH, AdGuard, Podman, Uptime Kuma, and Esty are intentionally observed/controlled through fixed allowlists only.
 - Coinbot and Mission Control were removed from the RP5 on 2026-05-16 after Pi4 health validation passed.

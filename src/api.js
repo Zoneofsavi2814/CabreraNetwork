@@ -145,3 +145,33 @@ export const saveTopologyAlias = (payload) => {
     body: JSON.stringify(payload),
   });
 };
+
+export const createPi5CodexSession = ({ rows, cols }) => {
+  return apiFetch("/api/pi5-codex/sessions", {
+    method: "POST",
+    body: JSON.stringify({ rows, cols }),
+  });
+};
+
+export const sendPi5CodexInput = (id, data) => {
+  return apiFetch(`/api/pi5-codex/sessions/${encodeURIComponent(id)}/input`, {
+    method: "POST",
+    body: JSON.stringify({ data }),
+  });
+};
+
+export const resizePi5CodexSession = (id, { rows, cols }) => {
+  return apiFetch(`/api/pi5-codex/sessions/${encodeURIComponent(id)}/resize`, {
+    method: "POST",
+    body: JSON.stringify({ rows, cols }),
+  });
+};
+
+export const closePi5CodexSession = (id) => {
+  return apiFetch(`/api/pi5-codex/sessions/${encodeURIComponent(id)}`, {
+    method: "DELETE",
+    body: JSON.stringify({}),
+  });
+};
+
+export const pi5CodexStreamUrl = (id) => `/api/pi5-codex/sessions/${encodeURIComponent(id)}/stream`;

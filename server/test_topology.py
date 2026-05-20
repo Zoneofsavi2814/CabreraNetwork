@@ -21,9 +21,12 @@ except ModuleNotFoundError:
 
     class FakeFlask:
         def __init__(self, *args, **kwargs):
-            pass
+            self.config = {}
 
         def after_request(self, fn):
+            return fn
+
+        def before_request(self, fn):
             return fn
 
         def get(self, *args, **kwargs):
@@ -32,14 +35,18 @@ except ModuleNotFoundError:
         def post(self, *args, **kwargs):
             return lambda fn: fn
 
+        def delete(self, *args, **kwargs):
+            return lambda fn: fn
+
         def run(self, *args, **kwargs):
             return None
 
     fake_flask.Flask = FakeFlask
     fake_flask.Response = lambda *args, **kwargs: None
     fake_flask.jsonify = lambda value=None, *args, **kwargs: value
-    fake_flask.request = types.SimpleNamespace(args={}, get_json=lambda *args, **kwargs: {})
+    fake_flask.request = types.SimpleNamespace(args={}, remote_addr="local", get_json=lambda *args, **kwargs: {})
     fake_flask.send_from_directory = lambda *args, **kwargs: None
+    fake_flask.session = {}
     sys.modules["flask"] = fake_flask
 
 from server import app as appmod
