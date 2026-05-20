@@ -1,0 +1,5 @@
+Flask>=2.2
+psutil>=5.9
+requests>=2.28
+cryptography>=38
+pamela>=1.0
