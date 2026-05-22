@@ -538,60 +538,6 @@
     gap: 8px;
   }
 
-  .pi5-terminal-panel {
-    overflow: hidden;
-  }
-  .pi5-terminal-panel .panel-head {
-    align-items: center;
-  }
-  .pi5-terminal-sub {
-    font-size: 10px;
-    color: var(--slate-2);
-    overflow: hidden;
-    text-overflow: ellipsis;
-    white-space: nowrap;
-  }
-  .pi5-terminal-actions,
-  .pi5-terminal-meta {
-    display: flex;
-    align-items: center;
-    gap: 8px;
-    min-width: 0;
-  }
-  .pi5-terminal-meta {
-    flex-wrap: wrap;
-    padding: 8px 12px;
-    border-bottom: 1px solid var(--hairline);
-    background: rgba(34, 211, 238, 0.025);
-  }
-  .pi5-terminal-surface {
-    height: 420px;
-    padding: 8px;
-    background:
-      linear-gradient(180deg, rgba(34, 211, 238, 0.035), transparent 28%),
-      #020507;
-    border-top: 1px solid rgba(34, 211, 238, 0.08);
-  }
-  .pi5-terminal-panel.connected .pi5-terminal-surface,
-  .pi5-terminal-panel.starting .pi5-terminal-surface,
-  .pi5-terminal-panel.reconnecting .pi5-terminal-surface {
-    box-shadow: inset 0 0 0 1px rgba(34, 211, 238, 0.12);
-  }
-  .pi5-terminal-panel.error .pi5-terminal-surface {
-    box-shadow: inset 0 0 0 1px rgba(244, 63, 94, 0.16);
-  }
-  .pi5-terminal-surface .xterm {
-    height: 100%;
-    padding: 4px;
-  }
-  .pi5-terminal-surface .xterm-viewport {
-    background: transparent !important;
-    scrollbar-color: rgba(34,211,238,0.20) transparent;
-  }
-  .pi5-terminal-surface .xterm-screen {
-    width: 100%;
-  }
-
   /* Selection */
   ::selection { background: rgba(34,211,238,0.30); color: #fff; }
 
@@ -1056,53 +1002,6 @@
     .mobile-ops-stack {
       gap: 8px;
     }
-    .mobile-ops-stack .pi5-terminal-panel .panel-head {
-      align-items: center;
-      padding: 10px;
-    }
-    .mobile-ops-stack .pi5-terminal-panel .panel-head > div:first-child {
-      flex: 1 1 170px;
-    }
-    .mobile-ops-stack .pi5-terminal-actions {
-      width: auto;
-      justify-content: flex-end;
-      flex-wrap: nowrap;
-      margin-left: auto;
-      gap: 6px;
-    }
-    .mobile-ops-stack .pi5-terminal-actions .pill {
-      min-height: 28px;
-      white-space: nowrap;
-    }
-    .mobile-ops-stack .pi5-terminal-actions .chip-btn,
-    [data-density="compact"] .mobile-ops-stack .pi5-terminal-actions .chip-btn {
-      width: 36px !important;
-      height: 36px !important;
-      min-height: 36px;
-      border-radius: 8px !important;
-    }
-    .pi5-terminal-meta {
-      padding: 8px 10px;
-      flex-wrap: nowrap;
-      overflow-x: auto;
-      scrollbar-width: none;
-    }
-    .pi5-terminal-meta::-webkit-scrollbar {
-      display: none;
-    }
-    .pi5-terminal-meta .pill {
-      flex: 0 0 auto;
-      min-height: 26px;
-      white-space: nowrap;
-    }
-    .pi5-terminal-surface {
-      height: min(520px, 62dvh);
-      min-height: 330px;
-      padding: 4px;
-    }
-    .pi5-terminal-surface .xterm {
-      padding: 2px;
-    }
     .mobile-ops-stack .ops-grid {
       gap: 10px !important;
       padding: 10px !important;
@@ -1177,6 +1076,10 @@
     .mobile-bottom-nav button {
       font-size: 9px;
       min-height: 52px;
+    }
+    .mobile-bottom-nav svg {
+      width: 16px;
+      height: 16px;
     }
   }
 

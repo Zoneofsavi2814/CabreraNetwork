@@ -9,8 +9,6 @@ import sys
 ALLOWED_UNITS = {
     "AdGuardHome.service",
     "k3s.service",
-    "container-uptime-kuma.service",
-    "container-esty.service",
     "smbd.service",
     "nmbd.service",
     "ssh.service",

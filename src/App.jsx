@@ -3,25 +3,17 @@
    refresh ripple, KPI detail. */
 
 import React, { useState, useEffect, useRef, useCallback, useMemo } from "react";
-import { Terminal } from "@xterm/xterm";
-import { FitAddon } from "@xterm/addon-fit";
-import "@xterm/xterm/css/xterm.css";
 import { Icon } from "./icons.jsx";
 import { Sparkline, TimeSeries, Donut, HBar, StackedBar, PodsBar } from "./charts.jsx";
 import { DEFAULT_DASHBOARD } from "./mockData.jsx";
 import {
-  closePi5CodexSession,
-  createPi5CodexSession,
   fetchLogs,
   getActionJob,
   getSession,
   login,
   logout,
-  pi5CodexStreamUrl,
   postAction,
-  resizePi5CodexSession,
   saveTopologyAlias,
-  sendPi5CodexInput,
   useDashboardFeed,
 } from "./api.js";
 
@@ -1589,20 +1581,6 @@ const CommandPalette = ({ open, onClose, onRun, data }) => {
         action: { kind: "open-url", url: app.url, label: app.label },
       })),
     });
-    const pi5Codex = data.PI5_CODEX || {};
-    g.push({
-      id: "pi5-codex", title: "Pi 5 Codex", glyph: "brandTerminal",
-      items: [
-        {
-          id: "pi5-codex.open",
-          label: "Open Pi 5 Codex terminal",
-          hint: `${pi5Codex.sshTarget || "pi5@192.168.0.94"} · ${pi5Codex.binary || "codex"}`,
-          kind: "info",
-          icon: "brandTerminal",
-          action: { kind: "pi5-codex" },
-        },
-      ],
-    });
     // Global group
     g.push({
       id: "global", title: "Dashboard", glyph: "command",
@@ -1905,272 +1883,6 @@ const OpsPanel = ({ onAction, onLogs, jobs }) => {
           </div>
         </div>
       </div>
-    </div>
-  );
-};
-
-const parseSsePayload = (event) => {
-  try {
-    return JSON.parse(event.data || "{}");
-  } catch {
-    return {};
-  }
-};
-
-const Pi5CodexTerminalPanel = ({ config = {}, onToast = () => {} }) => {
-  const terminalEl = useRef(null);
-  const terminalRef = useRef(null);
-  const fitRef = useRef(null);
-  const streamRef = useRef(null);
-  const sessionRef = useRef(null);
-  const startedRef = useRef(false);
-  const startInFlightRef = useRef(false);
-  const inputBufferRef = useRef("");
-  const inputTimerRef = useRef(null);
-  const resizeTimerRef = useRef(null);
-  const statusRef = useRef("starting");
-  const [status, setStatus] = useState("starting");
-  const [terminalReady, setTerminalReady] = useState(false);
-  const [sessionDoc, setSessionDoc] = useState(null);
-  const [error, setError] = useState("");
-  const target = config.sshTarget || `${config.user || "pi5"}@${config.ip || "192.168.0.94"}`;
-
-  useEffect(() => {
-    statusRef.current = status;
-  }, [status]);
-
-  const writeLocal = useCallback((text) => {
-    terminalRef.current?.write(text);
-  }, []);
-
-  const resizeTerminal = useCallback(() => {
-    const term = terminalRef.current;
-    const fit = fitRef.current;
-    if (!term || !fit) return;
-    try {
-      fit.fit();
-    } catch {
-      return;
-    }
-    if (sessionRef.current?.id) {
-      resizePi5CodexSession(sessionRef.current.id, { rows: term.rows, cols: term.cols }).catch(() => {});
-    }
-  }, []);
-
-  const scheduleResize = useCallback(() => {
-    if (resizeTimerRef.current) window.clearTimeout(resizeTimerRef.current);
-    resizeTimerRef.current = window.setTimeout(resizeTerminal, 80);
-  }, [resizeTerminal]);
-
-  const flushInput = useCallback(async () => {
-    if (inputTimerRef.current) {
-      window.clearTimeout(inputTimerRef.current);
-      inputTimerRef.current = null;
-    }
-    const active = sessionRef.current;
-    const data = inputBufferRef.current;
-    if (!active?.id || !data) return;
-    inputBufferRef.current = "";
-    try {
-      await sendPi5CodexInput(active.id, data);
-    } catch (err) {
-      setStatus("error");
-      setError(err.message || "terminal input failed");
-      writeLocal(`\r\n[input failed: ${err.message || "terminal input failed"}]\r\n`);
-    }
-  }, [writeLocal]);
-
-  const queueInput = useCallback((data) => {
-    if (!sessionRef.current?.id || statusRef.current !== "connected") return;
-    inputBufferRef.current += data;
-    if (inputBufferRef.current.length >= 256 || data.includes("\r") || data.includes("\n")) {
-      flushInput();
-      return;
-    }
-    if (inputTimerRef.current) window.clearTimeout(inputTimerRef.current);
-    inputTimerRef.current = window.setTimeout(flushInput, 20);
-  }, [flushInput]);
-
-  const openStream = useCallback((id) => {
-    if (streamRef.current) streamRef.current.close();
-    const stream = new EventSource(pi5CodexStreamUrl(id), { withCredentials: true });
-    streamRef.current = stream;
-    stream.onopen = () => {
-      if (sessionRef.current?.id !== id) return;
-      setStatus("connected");
-      setError("");
-    };
-    stream.addEventListener("status", (event) => {
-      const payload = parseSsePayload(event);
-      setSessionDoc(payload);
-    });
-    stream.addEventListener("output", (event) => {
-      const payload = parseSsePayload(event);
-      if (payload.text) writeLocal(payload.text);
-    });
-    stream.addEventListener("exit", (event) => {
-      const payload = parseSsePayload(event);
-      const message = payload.message || "Pi5 Codex terminal closed";
-      const failed = payload.exitCode !== null && payload.exitCode !== undefined && payload.exitCode !== 0;
-      sessionRef.current = null;
-      setSessionDoc((current) => current ? { ...current, status: "closed", exitCode: payload.exitCode } : null);
-      setStatus(failed ? "error" : "closed");
-      setError(failed ? message : "");
-      writeLocal(`\r\n[${message}]\r\n`);
-      stream.close();
-      if (streamRef.current === stream) streamRef.current = null;
-      onToast(message, failed ? "rose" : "cyan");
-    });
-    stream.onerror = () => {
-      if (!sessionRef.current?.id) return;
-      const message = "Pi5 Codex stream reconnecting";
-      if (statusRef.current !== "reconnecting") writeLocal(`\r\n[${message}]\r\n`);
-      setStatus("reconnecting");
-      setError(message);
-    };
-  }, [onToast, writeLocal]);
-
-  const startSession = useCallback(async ({ resetTerminal = false } = {}) => {
-    if (startInFlightRef.current || sessionRef.current?.id) return;
-    startInFlightRef.current = true;
-    const term = terminalRef.current;
-    setStatus("starting");
-    setError("");
-    if (resetTerminal) term?.reset();
-    term?.writeln(`Attaching to persistent Pi5 Codex at ${target}`);
-    term?.writeln(`Launching ${config.binary || "codex"} in ${config.workingDir || "/home/pi5"}`);
-    resizeTerminal();
-    try {
-      const session = await createPi5CodexSession({
-        rows: term?.rows || 28,
-        cols: term?.cols || 110,
-      });
-      sessionRef.current = session;
-      setSessionDoc(session);
-      setStatus("connected");
-      openStream(session.id);
-      term?.focus();
-      onToast("Pi5 Codex terminal active", "cyan");
-    } catch (err) {
-      const message = err.message || "Pi5 Codex terminal failed to start";
-      setStatus("error");
-      setError(message);
-      writeLocal(`\r\n[${message}]\r\n`);
-      onToast(message, "rose");
-    } finally {
-      startInFlightRef.current = false;
-    }
-  }, [config.binary, config.workingDir, onToast, openStream, resizeTerminal, target, writeLocal]);
-
-  const restartSession = useCallback(async () => {
-    if (statusRef.current === "starting") return;
-    if (inputTimerRef.current) {
-      window.clearTimeout(inputTimerRef.current);
-      inputTimerRef.current = null;
-    }
-    inputBufferRef.current = "";
-    const active = sessionRef.current;
-    sessionRef.current = null;
-    if (streamRef.current) {
-      streamRef.current.close();
-      streamRef.current = null;
-    }
-    setSessionDoc((current) => current ? { ...current, status: "closed" } : null);
-    if (active?.id) await closePi5CodexSession(active.id).catch(() => {});
-    await startSession({ resetTerminal: true });
-  }, [startSession]);
-
-  useEffect(() => {
-    if (!terminalReady || startedRef.current) return;
-    startedRef.current = true;
-    startSession();
-  }, [startSession, terminalReady]);
-
-  useEffect(() => {
-    if (!terminalEl.current) return undefined;
-    const term = new Terminal({
-      cursorBlink: true,
-      fontFamily: "Geist Mono, ui-monospace, SFMono-Regular, Menlo, monospace",
-      fontSize: 12,
-      lineHeight: 1.2,
-      scrollback: 2000,
-      convertEol: true,
-      theme: {
-        background: "#020507",
-        foreground: "#bccbd5",
-        cursor: "#67e8f9",
-        selectionBackground: "#164e63",
-        black: "#020507",
-        blue: "#22d3ee",
-        brightBlue: "#67e8f9",
-        cyan: "#22d3ee",
-        brightCyan: "#67e8f9",
-        green: "#22d3ee",
-        brightGreen: "#67e8f9",
-        red: "#e57373",
-        brightRed: "#fca5a5",
-        yellow: "#e0b25a",
-        brightYellow: "#facc15",
-        white: "#e1edf3",
-        brightWhite: "#ffffff",
-      },
-    });
-    const fit = new FitAddon();
-    term.loadAddon(fit);
-    term.open(terminalEl.current);
-    terminalRef.current = term;
-    fitRef.current = fit;
-    term.writeln("Raspberry Pi 5 Codex terminal ready.");
-    term.writeln("Attaching to the persistent Codex CLI session automatically.");
-    const dataDisposable = term.onData(queueInput);
-    const resizeObserver = typeof ResizeObserver !== "undefined" ? new ResizeObserver(scheduleResize) : null;
-    resizeObserver?.observe(terminalEl.current);
-    window.addEventListener("resize", scheduleResize);
-    const readyTimer = window.setTimeout(() => {
-      resizeTerminal();
-      setTerminalReady(true);
-    }, 0);
-    return () => {
-      dataDisposable.dispose();
-      resizeObserver?.disconnect();
-      window.removeEventListener("resize", scheduleResize);
-      window.clearTimeout(readyTimer);
-      if (resizeTimerRef.current) window.clearTimeout(resizeTimerRef.current);
-      if (inputTimerRef.current) window.clearTimeout(inputTimerRef.current);
-      sessionRef.current = null;
-      streamRef.current?.close();
-      term.dispose();
-    };
-  }, [queueInput, resizeTerminal, scheduleResize]);
-
-  const tone = status === "connected" ? "ok" : status === "starting" || status === "reconnecting" ? "warn" : status === "error" ? "fail" : "cyan";
-  const statusLabel = status === "connected" ? "active" : status === "closed" ? "exited" : status;
-
-  return (
-    <div id="pi5-codex-terminal" className={`panel pi5-terminal-panel ${status}`}>
-      <div className="panel-head mobile-panel-head-wrap">
-        <div style={{ display: "flex", alignItems: "center", gap: 10, minWidth: 0 }}>
-          <span className={`chip ${tone}`}><Icon name="brandTerminal" /></span>
-          <div style={{ minWidth: 0 }}>
-            <div style={{ fontSize: 13, fontWeight: 500 }}>Raspberry Pi 5 Codex</div>
-            <div className="mono pi5-terminal-sub">{target} · {config.binary || "codex"}</div>
-          </div>
-        </div>
-        <div className="pi5-terminal-actions">
-          <span className={`pill ${tone}`}><span className={`dot ${tone}`} />{statusLabel}</span>
-          <button className="chip-btn" title="Restart Pi5 Codex session" onClick={restartSession} disabled={status === "starting"}>
-            <Icon name="restart" />
-          </button>
-        </div>
-      </div>
-      <div className="pi5-terminal-meta">
-        <span className="pill ok"><Icon name="zap" size={11} />persistent</span>
-        <span className="pill cyan"><Icon name="network" size={11} />{config.ip || "192.168.0.94"}</span>
-        <span className="pill"><Icon name="command" size={11} />{config.workingDir || "/home/pi5"}</span>
-        {sessionDoc?.id && <span className="pill"><span className="mono">{sessionDoc.id}</span></span>}
-        {error && <span className="pill fail">{error}</span>}
-      </div>
-      <div className="pi5-terminal-surface" ref={terminalEl} />
     </div>
   );
 };
@@ -2772,7 +2484,6 @@ const MobileDashboard = ({
       )}
       {activeSection === "ops" && (
         <div className="mobile-tab-stack mobile-ops-stack">
-          <Pi5CodexTerminalPanel config={MOCK.PI5_CODEX} onToast={toasts.push} />
           <OpsPanel jobs={jobs} onAction={onOpsAction} onLogs={onJobLogs} />
         </div>
       )}
@@ -2904,15 +2615,6 @@ function DashboardApp({ onLogout }) {
     }
   }, [feed, toasts]);
 
-  const focusPi5Terminal = useCallback(() => {
-    if (isMobile) setActiveMobileSection("ops");
-    window.setTimeout(() => {
-      const panel = document.getElementById("pi5-codex-terminal");
-      panel?.scrollIntoView({ behavior: "smooth", block: "center" });
-      panel?.querySelector("textarea")?.focus();
-    }, 80);
-  }, [isMobile]);
-
   const handleServiceAction = (kind, svc) => {
     if (kind === "restart") {
       setConfirm({
@@ -2972,7 +2674,6 @@ function DashboardApp({ onLogout }) {
     else if (action.kind === "logs-container")    handleContainerAction("logs", action.c);
     else if (action.kind === "open-url")          { toasts.push(`Opening ${action.label}...`, "cyan"); window.open(action.url, "_blank", "noopener,noreferrer"); }
     else if (action.kind === "k3s-events")        openLogs({ sourceType: "k3s-events", id: "events", lines: 120 }, "k3s events", "kubectl get events -A");
-    else if (action.kind === "pi5-codex")         focusPi5Terminal();
     else if (action.kind === "refresh")           doRefresh();
   };
 
@@ -3065,11 +2766,6 @@ function DashboardApp({ onLogout }) {
               jobs={jobs}
               onAction={handleOpsAction}
               onLogs={handleJobLogs}
-            />
-
-            <Pi5CodexTerminalPanel
-              config={MOCK.PI5_CODEX}
-              onToast={toasts.push}
             />
 
             {/* Network topology — replaces storage */}

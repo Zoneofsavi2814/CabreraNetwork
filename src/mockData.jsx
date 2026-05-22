@@ -56,36 +56,26 @@ const KPIS = [
   { id: "temp",  label: "Temperature", glyph: "thermo",         value: 52.4,  suffix: "°C", status: "ok",   delta: "+0.8°", deltaTone: "neutral", history: HISTORY.temp },
   { id: "ssd",   label: "SSD Used",    glyph: "disk",           value: 21.1,  suffix: "%",  status: "ok",   delta: "+0.1%", deltaTone: "neutral", history: HISTORY.ssdPct, sub: "380 / 1800 GB" },
   { id: "dns",   label: "DNS / min",   glyph: "dns",            value: 307,   suffix: "",   status: "ok",   delta: "+12%",  deltaTone: "up",      history: HISTORY.dnsPerMin },
-  { id: "ctn",   label: "Containers",  glyph: "containerStack", value: "8/8", suffix: "",   status: "ok",   delta: "+1",    deltaTone: "up",      history: HISTORY.containers },
+  { id: "ctn",   label: "Containers",  glyph: "containerStack", value: "2/2", suffix: "",   status: "ok",   delta: "0",     deltaTone: "neutral", history: HISTORY.containers },
 ];
 
 const SERVICES = [
   { id: "adguard", label: "AdGuard Home",  unit: "AdGuardHome.service",         port: "53 · 8080", status: "ok", glyph: "brandShield",     ui: "http://192.168.0.101:8080" },
   { id: "k3s",     label: "k3s",           unit: "k3s.service",                 port: "6443",      status: "ok", glyph: "brandCubes" },
-  { id: "kuma",    label: "Uptime Kuma",   unit: "container-uptime-kuma.service",port: "3001",     status: "ok", glyph: "brandHeartbeat",  ui: "http://192.168.0.101:3001" },
-  { id: "esty",    label: "Esty",          unit: "container-esty.service",      port: "8095",      status: "ok", glyph: "brandContainer",  ui: "http://192.168.0.101:8095" },
   { id: "smbd",    label: "Samba (smbd)",  unit: "smbd.service",                port: "445",       status: "ok", glyph: "brandFolderNet" },
   { id: "nmbd",    label: "Samba (nmbd)",  unit: "nmbd.service",                port: "139",       status: "ok", glyph: "brandFolderNet" },
   { id: "ssh",     label: "SSH",           unit: "ssh.service",                 port: "22",        status: "ok", glyph: "brandTerminal" },
   { id: "podman",  label: "Podman socket", unit: "podman.socket",               port: "—",         status: "ok", glyph: "brandSocket" },
 ];
 
-const CONTAINERS = [
-  { id: "uptime-kuma",   image: "docker.io/louislam/uptime-kuma:1", status: "running", uptime: "168 h", restarts: 0, cpu: 0.4, mem: 92,  status_tone: "ok" },
-  { id: "coinbot",       image: "localhost/cabrera-mission-control:latest", status: "running", uptime: "5 h", restarts: 0, cpu: 0.3, mem: 88, status_tone: "ok" },
-  { id: "Coinbot-Mission-Control", label: "Coinbot-Mission-Control", image: "localhost/cabrera-mission-control:latest", status: "running", uptime: "5 h", restarts: 0, cpu: 0.5, mem: 132, status_tone: "ok" },
-  { id: "grid",          image: "localhost/grid:v1",                 status: "running", uptime: "19 h", restarts: 0, cpu: 0.2, mem: 41,  status_tone: "ok" },
-  { id: "esty", label: "Esty", image: "localhost/esty:latest", status: "running", uptime: "2 h", restarts: 0, cpu: 0.2, mem: 74, status_tone: "ok" },
-];
+const CONTAINERS = [];
 
 const WEB_APPS = [
-  { id: "cabrera-network", label: "Cabrera Network", url: "http://192.168.0.101/", port: "80", glyph: "activity", kind: "dashboard", status: "ok", statusLabel: "listening" },
-  { id: "adguard", label: "AdGuard Home", url: "http://192.168.0.101:8080/", port: "8080", glyph: "brandShield", kind: "admin", status: "ok", statusLabel: "listening" },
-  { id: "uptime-kuma", label: "Uptime Kuma", url: "http://192.168.0.101:3001/", port: "3001", glyph: "brandHeartbeat", kind: "monitoring", status: "ok", statusLabel: "listening" },
-  { id: "coinbot-mission-control", label: "Coinbot-Mission-Control", url: "http://192.168.0.101:8088/", port: "8088", glyph: "brandContainer", kind: "control", status: "ok", statusLabel: "listening" },
-  { id: "grid-wiki", label: "GRID Wiki", url: "http://192.168.0.101:8090/", port: "8090", glyph: "globe", kind: "knowledge", status: "ok", statusLabel: "listening" },
-  { id: "grid-api", label: "GRID protected listener/API", url: "http://192.168.0.101:7777/", port: "7777", glyph: "brandSocket", kind: "api", status: "ok", statusLabel: "listening" },
-  { id: "esty", label: "Esty", url: "http://192.168.0.101:8095/", port: "8095", glyph: "brandContainer", kind: "app", status: "ok", statusLabel: "listening" },
+  { id: "cabrera-network", label: "Cabrera Network", url: "http://cabrera.home.arpa/", port: "80", glyph: "activity", kind: "dashboard", status: "ok", statusLabel: "listening" },
+  { id: "adguard", label: "AdGuard Home", url: "http://adguard.home.arpa:8080/", port: "8080", glyph: "brandShield", kind: "admin", status: "ok", statusLabel: "listening" },
+  { id: "uptime-kuma", label: "Uptime Kuma", url: "http://kuma.home.arpa:3001/", port: "3001", glyph: "brandHeartbeat", kind: "monitoring", status: "ok", statusLabel: "listening" },
+  { id: "grid-wiki", label: "GRID Wiki", url: "http://grid.home.arpa:8090/", port: "8090", glyph: "globe", kind: "knowledge", status: "ok", statusLabel: "listening" },
+  { id: "grid-api", label: "GRID MCP/API", url: "http://grid-api.home.arpa:7777/", port: "7777", glyph: "brandSocket", kind: "api", status: "ok", statusLabel: "listening" },
 ];
 
 const ADGUARD = {
@@ -110,22 +100,22 @@ const ADGUARD = {
 };
 
 const K3S = {
-  version: "v1.30.4+k3s1",
+  version: "v1.35.4+k3s1",
   nodes: [
-    { name: "pi4", role: "control-plane,master", version: "v1.30.4+k3s1", ready: true, age: "16d" },
+    { name: "pi4", role: "control-plane", version: "v1.35.4+k3s1", ready: true, age: "12d" },
   ],
   podsByNs: [
-    { ns: "kube-system", running: 6, pending: 0, failed: 0 },
-    { ns: "default",     running: 2, pending: 0, failed: 0 },
-    { ns: "monitoring",  running: 3, pending: 0, failed: 0 },
-    { ns: "ingress-nginx", running: 1, pending: 0, failed: 0 },
+    { ns: "kube-system", running: 3, pending: 0, failed: 0 },
+    { ns: "homelab",     running: 3, pending: 0, failed: 0 },
   ],
   events: [
-    { t: "12:04:11", kind: "Normal", reason: "Pulled",   obj: "pod/web-deployment-7c4d",  msg: "Successfully pulled image \"echo:1.2\"" },
-    { t: "12:04:09", kind: "Normal", reason: "Created",  obj: "pod/web-deployment-7c4d",  msg: "Created container web" },
-    { t: "11:58:02", kind: "Normal", reason: "Started",  obj: "pod/web-deployment-7c4d",  msg: "Started container web" },
-    { t: "11:42:18", kind: "Normal", reason: "Scheduled",obj: "pod/grafana-agent-x9m2",   msg: "Successfully assigned monitoring/grafana-agent to pi4" },
-    { t: "10:11:30", kind: "Normal", reason: "Pulled",   obj: "pod/coredns-58b8b8c879",   msg: "Container image already present on machine" },
+    { t: "12:04:11", kind: "Normal", reason: "Started",  obj: "pod/uptime-kuma", msg: "Started container uptime-kuma" },
+    { t: "12:04:09", kind: "Normal", reason: "Started",  obj: "pod/grid",        msg: "Started container grid" },
+    { t: "11:58:02", kind: "Normal", reason: "Scheduled",obj: "pod/grid",        msg: "Successfully assigned homelab/grid to pi4" },
+  ],
+  workloads: [
+    { namespace: "homelab", kind: "Deployment", name: "uptime-kuma", desired: 1, ready: 1, image: "docker.io/louislam/uptime-kuma:1", rolloutAllowed: true },
+    { namespace: "homelab", kind: "Deployment", name: "grid", desired: 1, ready: 1, image: "localhost/grid:v1", rolloutAllowed: true },
   ],
 };
 
@@ -163,17 +153,6 @@ const HOST = {
   tempC: 52.4,
 };
 
-const PI5_CODEX = {
-  label: "Raspberry Pi 5 Codex",
-  host: "Raspberry Pi 5",
-  ip: "192.168.0.94",
-  user: "pi5",
-  sshTarget: "pi5@192.168.0.94",
-  binary: "/home/pi5/.npm-global/bin/codex",
-  workingDir: "/home/pi5",
-  status: "ready",
-};
-
 const TOPOLOGY = {
   router: { id: "main", name: "TP-Link Archer BE400", ip: "192.168.0.1", model: "Archer BE400" },
   host: { id: "pi4", name: "pi4", ip: "192.168.0.101", linkType: "wired", interface: "Wired", glyph: "cpu" },
@@ -200,4 +179,4 @@ const TOPOLOGY = {
   ],
 };
 
-export const DEFAULT_DASHBOARD = { HISTORY, KPIS, SERVICES, CONTAINERS, WEB_APPS, ADGUARD, K3S, STORAGE, LOGS, HOST, PI5_CODEX, TOPOLOGY };
+export const DEFAULT_DASHBOARD = { HISTORY, KPIS, SERVICES, CONTAINERS, WEB_APPS, ADGUARD, K3S, STORAGE, LOGS, HOST, TOPOLOGY };
