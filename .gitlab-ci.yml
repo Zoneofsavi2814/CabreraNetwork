@@ -1,0 +1,196 @@
+# CabreraNetwork — Flask Pi-ops backend + Vite/React dashboard
+# Self-hosted runner: Raspberry Pi 5 (tag: rp5)
+
+workflow:
+  rules:
+    - if: $CI_PIPELINE_SOURCE == "merge_request_event"
+    - if: $CI_COMMIT_BRANCH && $CI_OPEN_MERGE_REQUESTS == null
+    - if: $CI_COMMIT_TAG
+    - if: $CI_PIPELINE_SOURCE == "schedule"
+
+stages:
+  - check
+  - test
+  - build
+  - fix
+
+default:
+  tags:
+    - rp5
+  interruptible: true
+
+variables:
+  PIP_CACHE_DIR: "$CI_PROJECT_DIR/.cache/pip"
+  NPM_CONFIG_CACHE: "$CI_PROJECT_DIR/.cache/npm"
+  PYTHONDONTWRITEBYTECODE: "1"
+
+cache:
+  key:
+    files:
+      - requirements.txt
+      - package-lock.json
+  paths:
+    - .cache/pip
+    - .cache/npm
+    - node_modules/
+
+# ---- check stage ----
+
+git-diff-check:
+  stage: check
+  image: alpine:3.20
+  rules:
+    - if: $CI_MERGE_REQUEST_IID
+  before_script:
+    - apk add --no-cache git
+  script:
+    - git fetch --no-tags --depth=100 origin "$CI_MERGE_REQUEST_TARGET_BRANCH_NAME"
+    - git diff --check "origin/$CI_MERGE_REQUEST_TARGET_BRANCH_NAME...HEAD"
+
+secret-scan:
+  stage: check
+  image: zricethezav/gitleaks:latest
+  script:
+    - gitleaks detect --no-banner --redact --source .
+
+whitespace:check:
+  stage: check
+  script:
+    - echo "Scanning tracked text files for trailing whitespace, hard tabs, and CRLF endings..."
+    - |
+      FILES=$(git ls-files '*.py' '*.js' '*.css' '*.html' '*.sh' '*.json' '*.md' '*.yml' '*.yaml' 'requirements.txt' || true)
+      if [ -z "$FILES" ]; then echo "No files to check"; exit 0; fi
+      BAD=0
+      echo "$FILES" | while read -r f; do
+        if grep -nP ' +$' "$f" >/dev/null 2>&1; then echo "TRAILING WS: $f"; BAD=1; fi
+        if grep -nP '\r$' "$f" >/dev/null 2>&1; then echo "CRLF: $f"; BAD=1; fi
+      done
+      # tabs in non-Makefile, non-Python (Python tabs caught by ruff)
+      echo "$FILES" | grep -E '\.(js|css|html|json|yml|yaml)$' | while read -r f; do
+        if grep -nP '\t' "$f" >/dev/null 2>&1; then echo "TAB in $f"; fi
+      done
+      exit 0  # informational, do not fail pipeline
+
+python:syntax:
+  stage: check
+  image: python:3.11-slim
+  script:
+    - python -m compileall -q server scripts || true
+    - python -m py_compile server/app.py server/sudo_ops.py server/tplink_collector.py
+
+python:lint:
+  stage: check
+  image: python:3.11-slim
+  before_script:
+    - pip install --quiet ruff==0.6.9
+  script:
+    # Flask backend: app.py uses many low-level libs (pty, termios, fcntl) — keep rules pragmatic.
+    - ruff check server --select E,F,W --ignore E501,E402
+
+js:lint:
+  stage: check
+  image: node:20-alpine
+  before_script:
+    - npm ci --no-audit --no-fund --prefer-offline
+  script:
+    # No eslint configured; use vite/rollup syntax parse as a basic sanity gate.
+    - npx --yes acorn --silent --ecma 2022 --module src/api.js
+    - test -f src/styles.css && head -c 1 src/styles.css >/dev/null
+
+html:check:
+  stage: check
+  image: node:20-alpine
+  script:
+    - node -e "const fs=require('fs');const h=fs.readFileSync('index.html','utf8');if(!/<\/html>/i.test(h)){process.exit(1)}"
+    - echo "index.html has a closing </html> tag"
+
+shell:check:
+  stage: check
+  image: koalaman/shellcheck-alpine:stable
+  script:
+    - shellcheck -x scripts/install-pi.sh
+
+# ---- test stage ----
+
+python:test:
+  stage: test
+  image: python:3.11-slim
+  before_script:
+    - apt-get update -qq && apt-get install -yqq --no-install-recommends gcc
+    - pip install --quiet -r requirements.txt pytest pytest-cov
+  script:
+    # Server has test_pi5_codex_terminal.py, test_topology.py, test_tplink_collector.py
+    - cd server && python -m pytest -q --maxfail=3
+        --junitxml=$CI_PROJECT_DIR/report.xml
+        --cov=. --cov-report=xml:$CI_PROJECT_DIR/coverage.xml --cov-report=term
+        test_pi5_codex_terminal.py test_topology.py test_tplink_collector.py
+  coverage: '/(?i)TOTAL.*?(\d+(?:\.\d+)?)%/'
+  artifacts:
+    when: always
+    reports:
+      junit: report.xml
+      coverage_report:
+        coverage_format: cobertura
+        path: coverage.xml
+  allow_failure: true  # Pi-hardware paths may not be runnable in CI sandbox
+
+# ---- scheduled audits ----
+
+pip:audit:
+  stage: test
+  image: python:3.11-slim
+  rules:
+    - if: $CI_PIPELINE_SOURCE == "schedule"
+  before_script:
+    - pip install --quiet pip-audit
+  script:
+    - pip-audit -r requirements.txt
+
+npm:audit:
+  stage: test
+  image: node:20-alpine
+  rules:
+    - if: $CI_PIPELINE_SOURCE == "schedule"
+  script:
+    - npm audit --audit-level=high --omit=dev
+
+# ---- build stage ----
+
+frontend:build:
+  stage: build
+  image: node:20-alpine
+  before_script:
+    - npm ci --no-audit --no-fund --prefer-offline
+  script:
+    - npm run build
+  artifacts:
+    paths:
+      - dist/
+    expire_in: 1 week
+
+# ---- fix stage (manual) ----
+
+python:fix:
+  stage: fix
+  image: python:3.11-slim
+  when: manual
+  before_script:
+    - pip install --quiet ruff==0.6.9
+  script:
+    - ruff check server --fix --select E,F,W,I --ignore E501,E402
+    - ruff format server
+    - git diff --stat
+
+whitespace:fix:
+  stage: fix
+  image: alpine:3.20
+  when: manual
+  script:
+    - apk add --no-cache git
+    - |
+      git ls-files '*.py' '*.js' '*.css' '*.html' '*.sh' '*.json' '*.md' '*.yml' '*.yaml' | while read -r f; do
+        # strip trailing whitespace and convert CRLF -> LF
+        sed -i 's/[[:space:]]*$//' "$f"
+        sed -i 's/\r$//' "$f"
+      done
+    - git diff --stat
