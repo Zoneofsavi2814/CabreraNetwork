@@ -1,6 +1,6 @@
 # Cabrera Network
 
-Raspberry Pi 4 control-room dashboard for the home network. It combines a Vite/React UI with a Flask sidecar that reports host metrics, services, Podman containers, AdGuard, k3s, topology, logs, allowlisted actions, and web app links.
+Raspberry Pi 4 control-room dashboard for the home network. It combines a Vite/React UI with a Flask sidecar that reports host metrics, services, k3s pods and workloads, AdGuard, topology, logs, allowlisted actions, and web app links.
 
 ## Local Development
 
@@ -14,7 +14,7 @@ python3 -m py_compile server/app.py server/sudo_ops.py server/tplink_collector.p
 
 The deployed Pi4 copy lives at `/opt/pi4-noc` and runs as `pi4-noc.service` on `http://192.168.0.101/` and `http://cabrera.home.arpa/`.
 
-Observed/controlled services include AdGuard Home, k3s, Uptime Kuma, Samba, SSH, and the Podman socket.
+Observed/controlled services include AdGuard Home, k3s, Uptime Kuma, Samba, and SSH. Application workloads are managed through k3s.
 
 ```bash
 npm run build

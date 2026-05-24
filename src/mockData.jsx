@@ -40,7 +40,7 @@ const HISTORY = {
   temp:       seriesBound(303, 60, 48, 56, 0.80),
   ssdPct:     seriesBound(404, 60, 21.0, 21.2, 0.95),
   dnsPerMin:  seriesBound(505, 60, 220, 380),
-  containers: Array(60).fill(8).map((v, i) => i > 45 ? 9 : v),
+  pods: Array(60).fill(6).map((v, i) => i > 45 ? 7 : v),
   loadAvg:    seriesBound(606, 60, 0.35, 0.85),
   netIn:      seriesBound(707, 60, 80, 420),
   netOut:     seriesBound(808, 60, 40, 220),
@@ -56,7 +56,7 @@ const KPIS = [
   { id: "temp",  label: "Temperature", glyph: "thermo",         value: 52.4,  suffix: "°C", status: "ok",   delta: "+0.8°", deltaTone: "neutral", history: HISTORY.temp },
   { id: "ssd",   label: "SSD Used",    glyph: "disk",           value: 21.1,  suffix: "%",  status: "ok",   delta: "+0.1%", deltaTone: "neutral", history: HISTORY.ssdPct, sub: "380 / 1800 GB" },
   { id: "dns",   label: "DNS / min",   glyph: "dns",            value: 307,   suffix: "",   status: "ok",   delta: "+12%",  deltaTone: "up",      history: HISTORY.dnsPerMin },
-  { id: "ctn",   label: "Containers",  glyph: "containerStack", value: "2/2", suffix: "",   status: "ok",   delta: "0",     deltaTone: "neutral", history: HISTORY.containers },
+  { id: "pods",  label: "Pods",        glyph: "brandCubes",     value: "7/7", suffix: "",   status: "ok",   delta: "0",     deltaTone: "neutral", history: HISTORY.pods },
 ];
 
 const SERVICES = [
@@ -65,10 +65,7 @@ const SERVICES = [
   { id: "smbd",    label: "Samba (smbd)",  unit: "smbd.service",                port: "445",       status: "ok", glyph: "brandFolderNet" },
   { id: "nmbd",    label: "Samba (nmbd)",  unit: "nmbd.service",                port: "139",       status: "ok", glyph: "brandFolderNet" },
   { id: "ssh",     label: "SSH",           unit: "ssh.service",                 port: "22",        status: "ok", glyph: "brandTerminal" },
-  { id: "podman",  label: "Podman socket", unit: "podman.socket",               port: "—",         status: "ok", glyph: "brandSocket" },
 ];
-
-const CONTAINERS = [];
 
 const WEB_APPS = [
   { id: "cabrera-network", label: "Cabrera Network", url: "http://cabrera.home.arpa/", port: "80", glyph: "activity", kind: "dashboard", status: "ok", statusLabel: "listening" },
@@ -101,8 +98,9 @@ const ADGUARD = {
 
 const K3S = {
   version: "v1.35.4+k3s1",
+  runtime: "containerd://2.2.3-k3s1",
   nodes: [
-    { name: "pi4", role: "control-plane", version: "v1.35.4+k3s1", ready: true, age: "12d" },
+    { name: "pi4", role: "control-plane", version: "v1.35.4+k3s1", runtime: "containerd://2.2.3-k3s1", ready: true, age: "12d" },
   ],
   podsByNs: [
     { ns: "kube-system", running: 3, pending: 0, failed: 0 },
@@ -113,26 +111,30 @@ const K3S = {
     { t: "12:04:09", kind: "Normal", reason: "Started",  obj: "pod/grid",        msg: "Started container grid" },
     { t: "11:58:02", kind: "Normal", reason: "Scheduled",obj: "pod/grid",        msg: "Successfully assigned homelab/grid to pi4" },
   ],
+  pods: [
+    { namespace: "homelab", name: "grid-767467959-9q649", status: "running", status_tone: "ok", ready: "1/1", restarts: 1, age: "2d17h", node: "pi4", image: "localhost/grid:v1", containers: [{ name: "grid", image: "localhost/grid:v1", ready: true, restarts: 1, state: "running" }] },
+    { namespace: "homelab", name: "uptime-kuma-59b8d57456-7dc65", status: "running", status_tone: "ok", ready: "1/1", restarts: 1, age: "2d17h", node: "pi4", image: "louislam/uptime-kuma:1", containers: [{ name: "uptime-kuma", image: "louislam/uptime-kuma:1", ready: true, restarts: 1, state: "running" }] },
+    { namespace: "homelab", name: "local-registry-6d65fd485c-5nr8q", status: "running", status_tone: "ok", ready: "1/1", restarts: 1, age: "2d17h", node: "pi4", image: "registry:2", containers: [{ name: "registry", image: "registry:2", ready: true, restarts: 1, state: "running" }] },
+  ],
   workloads: [
-    { namespace: "homelab", kind: "Deployment", name: "uptime-kuma", desired: 1, ready: 1, image: "docker.io/louislam/uptime-kuma:1", rolloutAllowed: true },
-    { namespace: "homelab", kind: "Deployment", name: "grid", desired: 1, ready: 1, image: "localhost/grid:v1", rolloutAllowed: true },
+    { namespace: "homelab", kind: "deployment", name: "uptime-kuma", desired: 1, ready: 1, image: "louislam/uptime-kuma:1", rolloutAllowed: true },
+    { namespace: "homelab", kind: "deployment", name: "grid", desired: 1, ready: 1, image: "localhost/grid:v1", rolloutAllowed: true },
   ],
 };
 
 const STORAGE = {
   root:   { used: 12,  total: 32,   fs: "ext4", mount: "/" },
   ssd:    { used: 380, total: 1800, fs: "ext4", mount: "/mnt/ssd", segments: [
-    { label: "podman", value: 24,  tone: "cyan" },
     { label: "nas",    value: 312, tone: "ok" },
-    { label: "other",  value: 44,  tone: "muted" },
+    { label: "other",  value: 68,  tone: "muted" },
   ]},
 };
 
 const LOGS = [
-  { t: "12:04:11", src: "k3s",     level: "info", msg: "Started container web-deployment-7c4d" },
+  { t: "12:04:11", src: "k3s",     level: "info", msg: "Started pod web-deployment-7c4d" },
   { t: "12:01:53", src: "AdGuard", level: "info", msg: "Blocked doubleclick.net for 192.168.0.42" },
   { t: "12:00:14", src: "AdGuard", level: "info", msg: "Blocked googlesyndication.com for 192.168.0.55" },
-  { t: "11:58:02", src: "k3s",     level: "info", msg: "Created container web in pod web-deployment-7c4d" },
+  { t: "11:58:02", src: "k3s",     level: "info", msg: "Created pod web-deployment-7c4d" },
   { t: "11:42:18", src: "kubelet", level: "info", msg: "Successfully assigned monitoring/grafana-agent to pi4" },
   { t: "11:39:42", src: "smbd",    level: "info", msg: "192.168.0.55 connected to share nas (user nasuser)" },
 ];
@@ -179,4 +181,4 @@ const TOPOLOGY = {
   ],
 };
 
-export const DEFAULT_DASHBOARD = { HISTORY, KPIS, SERVICES, CONTAINERS, WEB_APPS, ADGUARD, K3S, STORAGE, LOGS, HOST, TOPOLOGY };
+export const DEFAULT_DASHBOARD = { HISTORY, KPIS, SERVICES, WEB_APPS, ADGUARD, K3S, STORAGE, LOGS, HOST, TOPOLOGY };

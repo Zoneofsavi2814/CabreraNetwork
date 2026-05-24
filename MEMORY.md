@@ -2,7 +2,7 @@
 
 ## 2026-05-16 Repository Setup
 
-- Canonical Mac source now lives at `/Users/christophercabrera/Desktop/repos/CabreraNetwork`.
+- Canonical Mac source now lives at `/Users/christophercabrera/Desktop/GithubRepos/CabreraNetwork`.
 - Original working source was copied from `/Users/christophercabrera/Desktop/Sandbox/RaspberryPi4/Rp4`.
 - GitHub remote is `git@github.com:Zoneofsavi2814/CabreraNetwork.git`.
 - Initial working branch for the imported dashboard is `initial`.
@@ -32,8 +32,8 @@
   - Uptime Kuma: `http://kuma.home.arpa:3001/`
   - GRID Wiki: `http://grid.home.arpa:8090/`
   - GRID MCP/API: `http://grid-api.home.arpa:7777/`
-- Rootful Podman workloads shown in the GUI are app containers only. Podman infra/pause containers are hidden because they are implementation details of pods.
-- `localhost/podman-pause:4.3.1-0` is Podman’s required pod infra image; do not delete it while the pod exists.
+- Pi4 app workloads are shown from k3s pods and workloads only.
+- The node runtime is k3s-managed containerd (`containerd://2.2.3-k3s1` on the last live check).
 
 ## Deployment And Validation
 
@@ -46,7 +46,7 @@
   - unauthenticated `/api/snapshot` and `/api/events` return `401`
   - `/api/session` returns `200` with `authenticated: false` before login
   - the Web Apps panel lists the current LAN links
-  - the Podman list hides infra/pause containers
+  - the k3s pod panel shows current homelab and kube-system pods
 
 ## Remote Access
 
@@ -60,4 +60,4 @@
 - AdGuard Home is active on DNS port `53` and admin UI port `8080`.
 - Uptime Kuma is managed as a k3s `homelab/uptime-kuma` deployment and remains reachable on port `3001`.
 - GRID is managed as a k3s `homelab/grid` deployment and remains reachable on ports `8090` and `7777`.
-- k3s, Samba, SSH, AdGuard, and Podman are intentionally observed/controlled through fixed allowlists only.
+- k3s, Samba, SSH, and AdGuard are intentionally observed/controlled through fixed allowlists only.

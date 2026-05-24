@@ -170,5 +170,70 @@ class TopologyCollectorTests(unittest.TestCase):
         self.assertNotIn("ip:192.0.2.254", cleared["devices"])
 
 
+class K3sSnapshotTests(unittest.TestCase):
+    def test_update_k3s_tracks_pods_runtime_and_kpi(self):
+        cache = appmod.DashboardCache()
+
+        def fake_run_json(argv, timeout=8, default=None):
+            key = tuple(argv[:4])
+            if key == ("/usr/local/bin/kubectl", "get", "nodes", "-o"):
+                return {
+                    "items": [
+                        {
+                            "metadata": {
+                                "name": "pi4",
+                                "creationTimestamp": "2026-05-20T00:00:00Z",
+                                "labels": {"node-role.kubernetes.io/control-plane": "true"},
+                            },
+                            "status": {
+                                "nodeInfo": {
+                                    "kubeletVersion": "v1.35.4+k3s1",
+                                    "containerRuntimeVersion": "containerd://2.2.3-k3s1",
+                                },
+                                "conditions": [{"type": "Ready", "status": "True"}],
+                            },
+                        }
+                    ]
+                }
+            if argv[:5] == ["/usr/local/bin/kubectl", "get", "pods", "-A", "-o"]:
+                return {
+                    "items": [
+                        {
+                            "metadata": {"name": "grid-abc", "namespace": "homelab", "creationTimestamp": "2026-05-20T00:00:00Z"},
+                            "spec": {"nodeName": "pi4", "containers": [{"name": "grid", "image": "localhost/grid:v1"}]},
+                            "status": {
+                                "phase": "Running",
+                                "podIP": "10.42.0.5",
+                                "containerStatuses": [{"name": "grid", "ready": True, "restartCount": 1, "state": {"running": {}}}],
+                            },
+                        }
+                    ]
+                }
+            if argv[:5] == ["/usr/local/bin/kubectl", "get", "events", "-A", "--sort-by=.lastTimestamp"]:
+                return {"items": []}
+            if argv[:4] == ["/usr/local/bin/kubectl", "get", "deploy,statefulset,daemonset"]:
+                return {
+                    "items": [
+                        {
+                            "kind": "Deployment",
+                            "metadata": {"name": "grid", "namespace": "homelab"},
+                            "spec": {"replicas": 1, "template": {"spec": {"containers": [{"image": "localhost/grid:v1"}]}}},
+                            "status": {"replicas": 1, "readyReplicas": 1},
+                        }
+                    ]
+                }
+            return default
+
+        with patch.object(appmod, "run_json", side_effect=fake_run_json):
+            cache.update_k3s()
+
+        snapshot = cache.snapshot()
+        self.assertEqual(snapshot["K3S"]["runtime"], "containerd://2.2.3-k3s1")
+        self.assertEqual(snapshot["K3S"]["pods"][0]["namespace"], "homelab")
+        self.assertEqual(snapshot["K3S"]["pods"][0]["containers"][0]["name"], "grid")
+        self.assertEqual(snapshot["KPIS"][-1]["label"], "Pods")
+        self.assertEqual(snapshot["KPIS"][-1]["value"], "1/1")
+
+
 if __name__ == "__main__":
     unittest.main()

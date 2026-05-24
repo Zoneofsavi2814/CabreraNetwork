@@ -559,7 +559,7 @@
     .ops-grid {
       grid-template-columns: minmax(0, 1fr) !important;
     }
-    .podman-grid {
+    .workload-grid {
       grid-template-columns: minmax(0, 1fr) !important;
     }
     .webapps-grid {
@@ -923,7 +923,7 @@
     .charts-grid,
     .adguard-hero-grid,
     .k3s-grid,
-    .podman-grid,
+    .workload-grid,
     .webapps-grid,
     .ops-grid,
     .dashboard-main-row {
@@ -988,14 +988,14 @@
       min-height: 44px;
       font-size: 13px;
     }
-    .container-card {
+    .pod-card {
       grid-template-columns: auto minmax(0, 1fr) !important;
     }
-    .container-card > div:last-child {
+    .pod-card > div:last-child {
       grid-column: 1 / -1;
       justify-content: flex-end;
     }
-    .container-stats {
+    .pod-stats {
       flex-wrap: wrap;
       gap: 10px !important;
     }

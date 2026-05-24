@@ -78,7 +78,7 @@ const paths = {
     <line x1="12" y1="12" x2="12" y2="20.5"/>
   </>,
 
-  // Podman-style: a seal/mammal silhouette — head + body + flippers
+  // Workload mascot mark — head + body + flippers
   brandContainer: <>
     <circle cx="12" cy="9" r="3"/>
     <path d="M6 18c0-3.5 2.7-5.5 6-5.5s6 2 6 5.5"/>
@@ -88,7 +88,7 @@ const paths = {
     <path d="M19 17.5c1 .2 2 .5 2.5 1.2"/>
   </>,
 
-  // Stacked containers (the previous brandContainer) — keep available for Podman list rows
+  // Stacked workload mark for dense resource lists
   brandContainerStack: <>
     <rect x="3" y="6" width="18" height="12" rx="1.5"/>
     <line x1="8" y1="6" x2="8" y2="18"/>
@@ -113,7 +113,7 @@ const paths = {
     <line x1="12" y1="15" x2="17" y2="15"/>
   </>,
 
-  // Socket — Podman socket
+  // Socket/API endpoint
   brandSocket: <>
     <circle cx="12" cy="12" r="9"/>
     <circle cx="12" cy="12" r="3"/>
