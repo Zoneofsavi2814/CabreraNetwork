@@ -44,14 +44,19 @@ export const Sparkline = ({ values, color = "var(--cyan)", height = 28, width = 
         <>
           <defs>
             <linearGradient id={`g-${id}`} x1="0" x2="0" y1="0" y2="1">
-              <stop offset="0%" stopColor={color} stopOpacity="0.25" />
+              <stop offset="0%" stopColor={color} stopOpacity="0.36" />
+              <stop offset="55%" stopColor={color} stopOpacity="0.1" />
               <stop offset="100%" stopColor={color} stopOpacity="0" />
             </linearGradient>
           </defs>
           <path d={a} fill={`url(#g-${id})`} />
         </>
       )}
-      <path d={p} fill="none" stroke={color} strokeWidth="1.4" strokeLinejoin="round" strokeLinecap="round" />
+      <path
+        d={p} fill="none" stroke={color} strokeWidth="1.6"
+        strokeLinejoin="round" strokeLinecap="round"
+        style={{ filter: `drop-shadow(0 0 3px ${color})` }}
+      />
     </svg>
   );
 };
@@ -93,7 +98,7 @@ export const TimeSeries = ({ seriesList, height = 120, yLabel, bars }) => {
           const x = padL + i * stepX - bw / 2;
           const h = (v / max) * innerH;
           const y = padT + innerH - h;
-          return <rect key={i} x={x} y={y} width={bw} height={h} fill={bars.color} opacity="0.55" rx="1" />;
+          return <rect key={i} x={x} y={y} width={bw} height={h} fill={bars.color} opacity="0.7" rx="1.5" />;
         });
       })()}
       {/* areas + lines */}
@@ -111,14 +116,18 @@ export const TimeSeries = ({ seriesList, height = 120, yLabel, bars }) => {
               <>
                 <defs>
                   <linearGradient id={id} x1="0" x2="0" y1="0" y2="1">
-                    <stop offset="0%" stopColor={s.color} stopOpacity="0.22" />
+                    <stop offset="0%" stopColor={s.color} stopOpacity="0.32" />
+                    <stop offset="60%" stopColor={s.color} stopOpacity="0.08" />
                     <stop offset="100%" stopColor={s.color} stopOpacity="0" />
                   </linearGradient>
                 </defs>
                 <path d={area} fill={`url(#${id})`} />
               </>
             )}
-            <path d={path} fill="none" stroke={s.color} strokeWidth="1.5" strokeLinejoin="round" />
+            <path
+              d={path} fill="none" stroke={s.color} strokeWidth="1.8" strokeLinejoin="round"
+              style={{ filter: `drop-shadow(0 0 4px ${s.color})` }}
+            />
           </g>
         );
       })}
@@ -139,7 +148,7 @@ export const Donut = ({ value, total, color = "var(--emerald)", size = 140, labe
   return (
     <div style={{ position: "relative", width: size, height: size }}>
       <svg width={size} height={size} viewBox={`0 0 ${size} ${size}`}>
-        <circle cx={size/2} cy={size/2} r={r} fill="none" stroke="rgba(148,163,184,0.12)" strokeWidth={stroke} />
+        <circle cx={size/2} cy={size/2} r={r} fill="none" stroke="rgba(120,180,220,0.12)" strokeWidth={stroke} />
         <circle
           cx={size/2} cy={size/2} r={r}
           fill="none" stroke={color} strokeWidth={stroke}
@@ -147,6 +156,7 @@ export const Donut = ({ value, total, color = "var(--emerald)", size = 140, labe
           strokeDashoffset={c / 4}
           strokeLinecap="round"
           transform={`rotate(-90 ${size/2} ${size/2})`}
+          style={{ filter: `drop-shadow(0 0 6px ${color})`, transition: "stroke-dasharray 600ms cubic-bezier(.16,1,.3,1)" }}
         />
       </svg>
       <div style={{
@@ -185,13 +195,15 @@ export const HBar = ({ items, max, color = "var(--cyan)", valueFmt = (v) => v.to
                 {it.ip && <span className="mono" style={{ color: "var(--slate-2)", fontSize: 10, flexShrink: 0, whiteSpace: "nowrap" }}>{it.ip}</span>}
               </div>
               <div style={{
-                height: 4, background: "rgba(148,163,184,0.08)",
-                borderRadius: 2, overflow: "hidden",
+                height: 5, background: "rgba(120,180,220,0.08)",
+                borderRadius: 3, overflow: "hidden",
               }}>
                 <div style={{
                   height: "100%", width: `${pct}%`,
-                  background: color, borderRadius: 2,
-                  transition: "width 320ms ease",
+                  background: `linear-gradient(90deg, rgba(255,255,255,0) 30%, rgba(255,255,255,0.28)), ${color}`,
+                  borderRadius: 3,
+                  boxShadow: `0 0 8px -1px ${color}`,
+                  transition: "width 480ms cubic-bezier(.16,1,.3,1)",
                 }} />
               </div>
             </div>
@@ -225,8 +237,8 @@ export const StackedBar = ({ segments, total, height = 12 }) => {
         return (
           <div key={i} title={`${s.label}: ${s.value} GB`} style={{
             width: `${pct}%`,
-            background: tones[s.tone] || tones.cyan,
-            opacity: 0.85,
+            background: `linear-gradient(180deg, rgba(255,255,255,0.18), rgba(255,255,255,0)), ${tones[s.tone] || tones.cyan}`,
+            opacity: 0.95,
             borderRight: i < segments.length - 1 ? "1px solid rgba(0,0,0,0.35)" : "none",
           }} />
         );
@@ -253,9 +265,9 @@ export const PodsBar = ({ items }) => {
               width: 28, height: hPx, display: "flex", flexDirection: "column-reverse",
               borderRadius: 4, overflow: "hidden", border: "1px solid var(--hairline)",
             }}>
-              <div style={{ height: rPx, background: "var(--emerald)", opacity: 0.8 }} />
-              <div style={{ height: pPx, background: "var(--amber)",   opacity: 0.8 }} />
-              <div style={{ height: fPx, background: "var(--rose)",    opacity: 0.8 }} />
+              <div style={{ height: rPx, background: "var(--emerald)", opacity: 0.92, boxShadow: "inset 0 0 8px -2px var(--emerald)" }} />
+              <div style={{ height: pPx, background: "var(--amber)",   opacity: 0.92 }} />
+              <div style={{ height: fPx, background: "var(--rose)",    opacity: 0.92 }} />
             </div>
             <div style={{
               fontSize: 10, color: "var(--slate)",

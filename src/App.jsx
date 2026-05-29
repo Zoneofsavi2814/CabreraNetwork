@@ -1,27 +1,19 @@
 /* Cabrera Network dashboard — composes top bar, KPI strip, charts, services, AdGuard,
-   k3s, Podman, Storage, footer. Plus ⌘K palette, confirm modal, toast stack,
+   k3s, Storage, footer. Plus ⌘K palette, confirm modal, toast stack,
    refresh ripple, KPI detail. */
 
 import React, { useState, useEffect, useRef, useCallback, useMemo } from "react";
-import { Terminal } from "@xterm/xterm";
-import { FitAddon } from "@xterm/addon-fit";
-import "@xterm/xterm/css/xterm.css";
 import { Icon } from "./icons.jsx";
 import { Sparkline, TimeSeries, Donut, HBar, StackedBar, PodsBar } from "./charts.jsx";
 import { DEFAULT_DASHBOARD } from "./mockData.jsx";
 import {
-  closePi5CodexSession,
-  createPi5CodexSession,
   fetchLogs,
   getActionJob,
   getSession,
   login,
   logout,
-  pi5CodexStreamUrl,
   postAction,
-  resizePi5CodexSession,
   saveTopologyAlias,
-  sendPi5CodexInput,
   useDashboardFeed,
 } from "./api.js";
 
@@ -203,10 +195,10 @@ const IconLegend = ({ open, onClose }) => {
   const brand = [
     { name: "brandShield",    label: "DNS / AdGuard Home" },
     { name: "brandCubes",     label: "Kubernetes / k3s" },
-    { name: "brandContainer", label: "Podman / containers" },
+    { name: "brandContainer", label: "Containerized app" },
     { name: "brandFolderNet", label: "Samba / NAS share" },
     { name: "brandTerminal",  label: "SSH" },
-    { name: "brandSocket",    label: "Podman socket" },
+    { name: "brandSocket",    label: "Socket / API listener" },
     { name: "brandHeartbeat", label: "Uptime Kuma" },
   ];
   return (
@@ -289,12 +281,12 @@ const TopBar = ({ onOpenPalette, onOpenLegend, onToggleDensity, onToggleTheme, o
       }}>
         {/* Left — mark + breadcrumb */}
         <div style={{ display: "flex", alignItems: "center", gap: 12 }}>
-          <div style={{
+          <div className="breathe" style={{
             width: 28, height: 28, borderRadius: 7,
-            border: "1px solid rgba(34,211,238,0.35)",
-            background: "linear-gradient(135deg, rgba(34,211,238,0.18), rgba(34,211,238,0.04))",
+            border: "1px solid rgba(34,211,238,0.45)",
+            background: "linear-gradient(135deg, rgba(34,211,238,0.28), rgba(129,140,248,0.16))",
             display: "flex", alignItems: "center", justifyContent: "center",
-            color: "var(--cyan)",
+            color: "var(--cyan-strong)",
             position: "relative",
           }}>
             <span className="mono" style={{ fontSize: 11, fontWeight: 600 }}>π</span>
@@ -371,12 +363,26 @@ const TopBar = ({ onOpenPalette, onOpenLegend, onToggleDensity, onToggleTheme, o
 };
 
 // ------------------------------------------------------------- KPI strip
+// Each KPI gets its own blue-family hue so the strip reads as a spectrum;
+// a warn/fail status overrides to amber/rose.
+const KPI_HUE = { cpu: "cyan", ram: "sky", temp: "indigo", ssd: "violet", dns: "teal" };
+
 const KPICard = ({ kpi, ticked, onClick }) => {
   const num = typeof kpi.value === "number"
     ? (kpi.value % 1 === 0 ? kpi.value : kpi.value.toFixed(1))
     : kpi.value;
+  const tone = kpi.status === "warn" ? "amber" : kpi.status === "fail" ? "rose" : (KPI_HUE[kpi.id] || "cyan");
+  const toneVar = `var(--${tone})`;
   return (
-    <div className="panel" style={{ padding: "10px 12px", cursor: "pointer" }} onClick={onClick}>
+    <div
+      className="panel"
+      style={{
+        padding: "10px 12px", cursor: "pointer",
+        background: `radial-gradient(150% 130% at 100% 0%, var(--${tone}-soft), transparent 58%), linear-gradient(180deg, var(--panel) 0%, var(--panel-2) 100%)`,
+        boxShadow: `inset 0 2px 0 0 ${toneVar}`,
+      }}
+      onClick={onClick}
+    >
       <div style={{ display: "flex", alignItems: "center", gap: 8, marginBottom: 4 }}>
         <span className={`chip ${kpi.status === "ok" ? "ok" : kpi.status === "warn" ? "warn" : "fail"}`}>
           <Icon name={kpi.glyph} />
@@ -401,11 +407,7 @@ const KPICard = ({ kpi, ticked, onClick }) => {
         {kpi.suffix && <span className="mono" style={{ fontSize: 12, color: "var(--slate)" }}>{kpi.suffix}</span>}
       </div>
       {kpi.sub && <div style={{ fontSize: 10, color: "var(--slate-2)", marginBottom: 4 }}>{kpi.sub}</div>}
-      <Sparkline values={kpi.history} color={
-        kpi.status === "warn" ? "var(--amber)" :
-        kpi.status === "fail" ? "var(--rose)" :
-        kpi.id === "dns" || kpi.id === "ctn" ? "var(--cyan)" : "var(--emerald)"
-      } />
+      <Sparkline values={kpi.history} color={toneVar} />
     </div>
   );
 };
@@ -553,22 +555,22 @@ const ChartsGrid = () => (
       title="CPU + Load"
       legend={[
         { label: "cpu %", color: "var(--cyan)" },
-        { label: "load×10", color: "var(--emerald)" },
+        { label: "load×10", color: "var(--indigo)" },
       ]}
       seriesList={[
         { values: MOCK.HISTORY.cpu, color: "var(--cyan)" },
-        { values: MOCK.HISTORY.loadAvg.map(v => v * 10), color: "var(--emerald)", area: false },
+        { values: MOCK.HISTORY.loadAvg.map(v => v * 10), color: "var(--indigo)", area: false },
       ]}
     />
     <ChartPanel
       title="Network · kbps"
       legend={[
-        { label: "in", color: "var(--cyan)" },
-        { label: "out", color: "var(--amber)" },
+        { label: "in", color: "var(--sky)" },
+        { label: "out", color: "var(--teal)" },
       ]}
       seriesList={[
-        { values: MOCK.HISTORY.netIn,  color: "var(--cyan)" },
-        { values: MOCK.HISTORY.netOut, color: "var(--amber)" },
+        { values: MOCK.HISTORY.netIn,  color: "var(--sky)" },
+        { values: MOCK.HISTORY.netOut, color: "var(--teal)" },
       ]}
     />
     <ChartPanel
@@ -583,12 +585,12 @@ const ChartsGrid = () => (
     <ChartPanel
       title="Disk I/O · MB/s"
       legend={[
-        { label: "read",  color: "var(--emerald)" },
-        { label: "write", color: "var(--amber)" },
+        { label: "read",  color: "var(--teal)" },
+        { label: "write", color: "var(--indigo)" },
       ]}
       seriesList={[
-        { values: MOCK.HISTORY.diskRead,  color: "var(--emerald)" },
-        { values: MOCK.HISTORY.diskWrite, color: "var(--amber)" },
+        { values: MOCK.HISTORY.diskRead,  color: "var(--teal)" },
+        { values: MOCK.HISTORY.diskWrite, color: "var(--indigo)" },
       ]}
     />
   </div>
@@ -704,6 +706,13 @@ const BlockRateMeter = ({ blockRatio, blocked, queries, qps }) => {
   return (
     <div style={{ position: "relative", width: size, height: size, margin: "0 auto" }}>
       <svg width={size} height={size} viewBox={`0 0 ${size} ${size}`}>
+        <defs>
+          <linearGradient id="meterGrad" x1="0" y1="0" x2="1" y2="1">
+            <stop offset="0%" stopColor="var(--cyan)" />
+            <stop offset="55%" stopColor="var(--sky)" />
+            <stop offset="100%" stopColor="var(--indigo)" />
+          </linearGradient>
+        </defs>
         {/* outer tick ring */}
         <g>
           {ticks.map(i => {
@@ -715,26 +724,28 @@ const BlockRateMeter = ({ blockRatio, blocked, queries, qps }) => {
             const y1 = cy + Math.sin(a) * inner;
             const x2 = cx + Math.cos(a) * outer;
             const y2 = cy + Math.sin(a) * outer;
-            return <line key={i} x1={x1} y1={y1} x2={x2} y2={y2} stroke="rgba(148,163,184,0.25)" strokeWidth={isMajor ? 1.2 : 0.8} />;
+            return <line key={i} x1={x1} y1={y1} x2={x2} y2={y2} stroke={isMajor ? "rgba(56,189,248,0.4)" : "rgba(120,180,220,0.22)"} strokeWidth={isMajor ? 1.2 : 0.8} />;
           })}
         </g>
         {/* track */}
-        <circle cx={cx} cy={cy} r={r} fill="none" stroke="rgba(244,63,94,0.10)" strokeWidth={stroke} />
+        <circle cx={cx} cy={cy} r={r} fill="none" stroke="rgba(56,189,248,0.12)" strokeWidth={stroke} />
         {/* progress */}
         <circle
           cx={cx} cy={cy} r={r}
-          fill="none" stroke="var(--rose)" strokeWidth={stroke}
+          fill="none" stroke="url(#meterGrad)" strokeWidth={stroke}
           strokeDasharray={`${c * pct} ${c}`}
           strokeDashoffset={c / 4}
           strokeLinecap="round"
           transform={`rotate(-90 ${cx} ${cy})`}
+          style={{ filter: "drop-shadow(0 0 6px var(--cyan-glow))", transition: "stroke-dasharray 600ms cubic-bezier(.16,1,.3,1)" }}
         />
         {/* needle dot at progress end */}
         <circle
           cx={cx + Math.cos(pct * 2 * Math.PI - Math.PI / 2) * r}
           cy={cy + Math.sin(pct * 2 * Math.PI - Math.PI / 2) * r}
           r={4}
-          fill="var(--rose)"
+          fill="var(--cyan-strong)"
+          style={{ filter: "drop-shadow(0 0 5px var(--cyan-glow))" }}
         />
       </svg>
       <div style={{
@@ -743,7 +754,7 @@ const BlockRateMeter = ({ blockRatio, blocked, queries, qps }) => {
         gap: 0, pointerEvents: "none",
       }}>
         <div style={{ fontSize: 9, color: "var(--slate)", textTransform: "uppercase", letterSpacing: "0.10em", marginBottom: 2 }}>live qps</div>
-        <div className="mono" style={{ fontSize: 34, fontWeight: 500, letterSpacing: -1, color: "var(--cyan)", lineHeight: 1 }}>
+        <div className="mono breathe" style={{ fontSize: 34, fontWeight: 500, letterSpacing: -1, color: "var(--cyan-strong)", lineHeight: 1 }}>
           {qps.toFixed(1)}
         </div>
         <div className="mono" style={{ fontSize: 11, color: "var(--slate)", marginTop: 4 }}>
@@ -888,68 +899,6 @@ const K3sPanel = () => {
     </div>
   );
 };
-
-// ------------------------------------------------------------- Podman
-const ContainerCard = ({ c, onAction }) => (
-  <div className="row-hover container-card" style={{
-    border: "1px solid var(--hairline)", borderRadius: 10,
-    padding: "12px 14px",
-    background: "rgba(148,163,184,0.02)",
-    display: "grid", gridTemplateColumns: "auto 1fr auto", gap: 12, alignItems: "center",
-  }}>
-    <span className={`chip ${c.status_tone}`}><Icon name="brandContainer" /></span>
-    <div style={{ minWidth: 0 }}>
-      <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
-        <span className="mono" style={{ fontSize: 13, color: "var(--fg)", whiteSpace: "nowrap", overflow: "hidden", textOverflow: "ellipsis" }}>
-          {c.label || c.id}
-        </span>
-        <span className={`pill ${c.status_tone}`} style={{ height: 18, fontSize: 10, padding: "0 6px" }}>
-          <span className={`dot ${c.status_tone}`} />{c.status}
-        </span>
-      </div>
-      <div className="mono" style={{ fontSize: 10, color: "var(--slate-2)", marginTop: 2,
-        whiteSpace: "nowrap", overflow: "hidden", textOverflow: "ellipsis" }}>
-        {c.image}
-      </div>
-      <div className="container-stats" style={{ display: "flex", gap: 14, marginTop: 8, fontSize: 11 }}>
-        <Stat label="uptime"   value={c.uptime} />
-        <Stat label="restarts" value={c.restarts} tone={c.restarts > 0 ? "warn" : null} />
-        <Stat label="cpu"      value={`${c.cpu.toFixed(1)}%`} />
-        <Stat label="mem"      value={`${c.mem} MB`} />
-      </div>
-    </div>
-    <div style={{ display: "flex", gap: 4 }}>
-      <button className="chip-btn warn" title="Restart" onClick={() => onAction("restart", c)}><Icon name="restart" /></button>
-      <button className="chip-btn fail" title="Stop"    onClick={() => onAction("stop", c)}><Icon name="stop" /></button>
-      <button className="chip-btn"      title="Logs"    onClick={() => onAction("logs", c)}><Icon name="logs" /></button>
-    </div>
-  </div>
-);
-
-const Stat = ({ label, value, tone }) => (
-  <div style={{ display: "flex", flexDirection: "column", lineHeight: 1.1 }}>
-    <span style={{ fontSize: 9, color: "var(--slate-2)", letterSpacing: "0.08em", textTransform: "uppercase" }}>{label}</span>
-    <span className="mono" style={{ fontSize: 12, color: tone === "warn" ? "var(--amber)" : "var(--fg)", marginTop: 2 }}>{value}</span>
-  </div>
-);
-
-const PodmanPanel = ({ onAction }) => (
-  <div className="panel">
-    <div className="panel-head">
-      <div style={{ display: "flex", alignItems: "center", gap: 10 }}>
-        <span className="chip ok"><Icon name="brandContainer" /></span>
-        <div>
-          <div style={{ fontSize: 13, fontWeight: 500 }}>Podman</div>
-          <div className="mono" style={{ fontSize: 10, color: "var(--slate-2)" }}>{MOCK.CONTAINERS.length} app containers · infra hidden</div>
-        </div>
-      </div>
-      <button className="btn" onClick={() => onAction("start-all")}><Icon name="play" />Start all</button>
-    </div>
-    <div className="podman-grid" style={{ padding: "var(--s-5)", display: "grid", gridTemplateColumns: "1fr 1fr", gap: 12 }}>
-      {MOCK.CONTAINERS.map(c => <ContainerCard key={c.id} c={c} onAction={onAction} />)}
-    </div>
-  </div>
-);
 
 // ------------------------------------------------------------- Topology
 const GROUP_META = [
@@ -1220,7 +1169,7 @@ const TopologyGraph = ({ router, host, aps, clients }) => {
           key={edge.id}
           d={edge.d}
           fill="none"
-          stroke={edge.tone === "uplink" ? "rgba(148,163,184,0.26)" : edge.tone === "ap" ? "rgba(16,185,129,0.28)" : "rgba(34,211,238,0.28)"}
+          stroke={edge.tone === "uplink" ? "rgba(148,163,184,0.26)" : edge.tone === "ap" ? "rgba(45,212,191,0.3)" : "rgba(34,211,238,0.28)"}
           strokeWidth={edge.tone === "uplink" ? "1.2" : "1"}
           strokeDasharray={edge.tone === "uplink" ? "6 5" : "3 3"}
         />
@@ -1261,7 +1210,7 @@ const TopologyGraph = ({ router, host, aps, clients }) => {
       ))}
 
       <g>
-        <rect x="54" y={unplacedY - 24} width="812" height="58" rx="8" fill="rgba(7,11,22,0.72)" stroke="rgba(245,158,11,0.24)" />
+        <rect x="54" y={unplacedY - 24} width="812" height="58" rx="8" fill="rgba(7,11,22,0.72)" stroke="rgba(251,191,36,0.24)" />
         <text x="74" y={unplacedY - 3} fill="var(--amber)" fontSize="10" fontFamily="var(--mono)">
           Unplaced observations · {unplacedRows.filter((row) => row.online).length}/{unplacedRows.length} online
         </text>
@@ -1417,8 +1366,8 @@ const TopologyPill = ({ tone, label }) => (
 const TopoNode = ({ x, y, label, sub, glyph, tone = "ok", small }) => {
   const w = small ? 84 : 126;
   const h = small ? 38 : 50;
-  const ringColor = tone === "ok" ? "rgba(16,185,129,0.55)" :
-                    tone === "warn" ? "rgba(245,158,11,0.55)" :
+  const ringColor = tone === "ok" ? "rgba(45,212,191,0.55)" :
+                    tone === "warn" ? "rgba(251,191,36,0.55)" :
                     tone === "cyan" ? "rgba(34,211,238,0.55)" :
                     "rgba(148,163,184,0.34)";
   const iconColor = tone === "ok" ? "var(--emerald)" : tone === "warn" ? "var(--amber)" : tone === "cyan" ? "var(--cyan)" : "var(--slate)";
@@ -1570,14 +1519,6 @@ const CommandPalette = ({ open, onClose, onRun, data }) => {
     });
     // k3s extras
     g.find(x => x.id === "k3s")?.items.push({ id: "k3s.events", label: "View events", hint: "kubectl get events -A", kbd: KBD_HINTS["k3s.events"], kind: "info", icon: "logs", action: { kind: "k3s-events" } });
-    // Container group
-    g.push({
-      id: "containers", title: "Containers", glyph: "brandContainer",
-      items: data.CONTAINERS.map(c => ([
-        { id: `c.${c.id}.restart`, label: `Restart ${c.label || c.id}`, hint: c.image, kind: "danger", icon: "restart", action: { kind: "restart-container", c } },
-        { id: `c.${c.id}.logs`,    label: `View logs · ${c.label || c.id}`, hint: c.image, kind: "info", icon: "logs", action: { kind: "logs-container", c } },
-      ])).flat(),
-    });
     g.push({
       id: "web-apps", title: "Web Apps", glyph: "external",
       items: (data.WEB_APPS || []).map((app) => ({
@@ -1588,20 +1529,6 @@ const CommandPalette = ({ open, onClose, onRun, data }) => {
         icon: "external",
         action: { kind: "open-url", url: app.url, label: app.label },
       })),
-    });
-    const pi5Codex = data.PI5_CODEX || {};
-    g.push({
-      id: "pi5-codex", title: "Pi 5 Codex", glyph: "brandTerminal",
-      items: [
-        {
-          id: "pi5-codex.open",
-          label: "Open Pi 5 Codex terminal",
-          hint: `${pi5Codex.sshTarget || "pi5@192.168.0.94"} · ${pi5Codex.binary || "codex"}`,
-          kind: "info",
-          icon: "brandTerminal",
-          action: { kind: "pi5-codex" },
-        },
-      ],
     });
     // Global group
     g.push({
@@ -1905,272 +1832,6 @@ const OpsPanel = ({ onAction, onLogs, jobs }) => {
           </div>
         </div>
       </div>
-    </div>
-  );
-};
-
-const parseSsePayload = (event) => {
-  try {
-    return JSON.parse(event.data || "{}");
-  } catch {
-    return {};
-  }
-};
-
-const Pi5CodexTerminalPanel = ({ config = {}, onToast = () => {} }) => {
-  const terminalEl = useRef(null);
-  const terminalRef = useRef(null);
-  const fitRef = useRef(null);
-  const streamRef = useRef(null);
-  const sessionRef = useRef(null);
-  const startedRef = useRef(false);
-  const startInFlightRef = useRef(false);
-  const inputBufferRef = useRef("");
-  const inputTimerRef = useRef(null);
-  const resizeTimerRef = useRef(null);
-  const statusRef = useRef("starting");
-  const [status, setStatus] = useState("starting");
-  const [terminalReady, setTerminalReady] = useState(false);
-  const [sessionDoc, setSessionDoc] = useState(null);
-  const [error, setError] = useState("");
-  const target = config.sshTarget || `${config.user || "pi5"}@${config.ip || "192.168.0.94"}`;
-
-  useEffect(() => {
-    statusRef.current = status;
-  }, [status]);
-
-  const writeLocal = useCallback((text) => {
-    terminalRef.current?.write(text);
-  }, []);
-
-  const resizeTerminal = useCallback(() => {
-    const term = terminalRef.current;
-    const fit = fitRef.current;
-    if (!term || !fit) return;
-    try {
-      fit.fit();
-    } catch {
-      return;
-    }
-    if (sessionRef.current?.id) {
-      resizePi5CodexSession(sessionRef.current.id, { rows: term.rows, cols: term.cols }).catch(() => {});
-    }
-  }, []);
-
-  const scheduleResize = useCallback(() => {
-    if (resizeTimerRef.current) window.clearTimeout(resizeTimerRef.current);
-    resizeTimerRef.current = window.setTimeout(resizeTerminal, 80);
-  }, [resizeTerminal]);
-
-  const flushInput = useCallback(async () => {
-    if (inputTimerRef.current) {
-      window.clearTimeout(inputTimerRef.current);
-      inputTimerRef.current = null;
-    }
-    const active = sessionRef.current;
-    const data = inputBufferRef.current;
-    if (!active?.id || !data) return;
-    inputBufferRef.current = "";
-    try {
-      await sendPi5CodexInput(active.id, data);
-    } catch (err) {
-      setStatus("error");
-      setError(err.message || "terminal input failed");
-      writeLocal(`\r\n[input failed: ${err.message || "terminal input failed"}]\r\n`);
-    }
-  }, [writeLocal]);
-
-  const queueInput = useCallback((data) => {
-    if (!sessionRef.current?.id || statusRef.current !== "connected") return;
-    inputBufferRef.current += data;
-    if (inputBufferRef.current.length >= 256 || data.includes("\r") || data.includes("\n")) {
-      flushInput();
-      return;
-    }
-    if (inputTimerRef.current) window.clearTimeout(inputTimerRef.current);
-    inputTimerRef.current = window.setTimeout(flushInput, 20);
-  }, [flushInput]);
-
-  const openStream = useCallback((id) => {
-    if (streamRef.current) streamRef.current.close();
-    const stream = new EventSource(pi5CodexStreamUrl(id), { withCredentials: true });
-    streamRef.current = stream;
-    stream.onopen = () => {
-      if (sessionRef.current?.id !== id) return;
-      setStatus("connected");
-      setError("");
-    };
-    stream.addEventListener("status", (event) => {
-      const payload = parseSsePayload(event);
-      setSessionDoc(payload);
-    });
-    stream.addEventListener("output", (event) => {
-      const payload = parseSsePayload(event);
-      if (payload.text) writeLocal(payload.text);
-    });
-    stream.addEventListener("exit", (event) => {
-      const payload = parseSsePayload(event);
-      const message = payload.message || "Pi5 Codex terminal closed";
-      const failed = payload.exitCode !== null && payload.exitCode !== undefined && payload.exitCode !== 0;
-      sessionRef.current = null;
-      setSessionDoc((current) => current ? { ...current, status: "closed", exitCode: payload.exitCode } : null);
-      setStatus(failed ? "error" : "closed");
-      setError(failed ? message : "");
-      writeLocal(`\r\n[${message}]\r\n`);
-      stream.close();
-      if (streamRef.current === stream) streamRef.current = null;
-      onToast(message, failed ? "rose" : "cyan");
-    });
-    stream.onerror = () => {
-      if (!sessionRef.current?.id) return;
-      const message = "Pi5 Codex stream reconnecting";
-      if (statusRef.current !== "reconnecting") writeLocal(`\r\n[${message}]\r\n`);
-      setStatus("reconnecting");
-      setError(message);
-    };
-  }, [onToast, writeLocal]);
-
-  const startSession = useCallback(async ({ resetTerminal = false } = {}) => {
-    if (startInFlightRef.current || sessionRef.current?.id) return;
-    startInFlightRef.current = true;
-    const term = terminalRef.current;
-    setStatus("starting");
-    setError("");
-    if (resetTerminal) term?.reset();
-    term?.writeln(`Attaching to persistent Pi5 Codex at ${target}`);
-    term?.writeln(`Launching ${config.binary || "codex"} in ${config.workingDir || "/home/pi5"}`);
-    resizeTerminal();
-    try {
-      const session = await createPi5CodexSession({
-        rows: term?.rows || 28,
-        cols: term?.cols || 110,
-      });
-      sessionRef.current = session;
-      setSessionDoc(session);
-      setStatus("connected");
-      openStream(session.id);
-      term?.focus();
-      onToast("Pi5 Codex terminal active", "cyan");
-    } catch (err) {
-      const message = err.message || "Pi5 Codex terminal failed to start";
-      setStatus("error");
-      setError(message);
-      writeLocal(`\r\n[${message}]\r\n`);
-      onToast(message, "rose");
-    } finally {
-      startInFlightRef.current = false;
-    }
-  }, [config.binary, config.workingDir, onToast, openStream, resizeTerminal, target, writeLocal]);
-
-  const restartSession = useCallback(async () => {
-    if (statusRef.current === "starting") return;
-    if (inputTimerRef.current) {
-      window.clearTimeout(inputTimerRef.current);
-      inputTimerRef.current = null;
-    }
-    inputBufferRef.current = "";
-    const active = sessionRef.current;
-    sessionRef.current = null;
-    if (streamRef.current) {
-      streamRef.current.close();
-      streamRef.current = null;
-    }
-    setSessionDoc((current) => current ? { ...current, status: "closed" } : null);
-    if (active?.id) await closePi5CodexSession(active.id).catch(() => {});
-    await startSession({ resetTerminal: true });
-  }, [startSession]);
-
-  useEffect(() => {
-    if (!terminalReady || startedRef.current) return;
-    startedRef.current = true;
-    startSession();
-  }, [startSession, terminalReady]);
-
-  useEffect(() => {
-    if (!terminalEl.current) return undefined;
-    const term = new Terminal({
-      cursorBlink: true,
-      fontFamily: "Geist Mono, ui-monospace, SFMono-Regular, Menlo, monospace",
-      fontSize: 12,
-      lineHeight: 1.2,
-      scrollback: 2000,
-      convertEol: true,
-      theme: {
-        background: "#020507",
-        foreground: "#bccbd5",
-        cursor: "#67e8f9",
-        selectionBackground: "#164e63",
-        black: "#020507",
-        blue: "#22d3ee",
-        brightBlue: "#67e8f9",
-        cyan: "#22d3ee",
-        brightCyan: "#67e8f9",
-        green: "#22d3ee",
-        brightGreen: "#67e8f9",
-        red: "#e57373",
-        brightRed: "#fca5a5",
-        yellow: "#e0b25a",
-        brightYellow: "#facc15",
-        white: "#e1edf3",
-        brightWhite: "#ffffff",
-      },
-    });
-    const fit = new FitAddon();
-    term.loadAddon(fit);
-    term.open(terminalEl.current);
-    terminalRef.current = term;
-    fitRef.current = fit;
-    term.writeln("Raspberry Pi 5 Codex terminal ready.");
-    term.writeln("Attaching to the persistent Codex CLI session automatically.");
-    const dataDisposable = term.onData(queueInput);
-    const resizeObserver = typeof ResizeObserver !== "undefined" ? new ResizeObserver(scheduleResize) : null;
-    resizeObserver?.observe(terminalEl.current);
-    window.addEventListener("resize", scheduleResize);
-    const readyTimer = window.setTimeout(() => {
-      resizeTerminal();
-      setTerminalReady(true);
-    }, 0);
-    return () => {
-      dataDisposable.dispose();
-      resizeObserver?.disconnect();
-      window.removeEventListener("resize", scheduleResize);
-      window.clearTimeout(readyTimer);
-      if (resizeTimerRef.current) window.clearTimeout(resizeTimerRef.current);
-      if (inputTimerRef.current) window.clearTimeout(inputTimerRef.current);
-      sessionRef.current = null;
-      streamRef.current?.close();
-      term.dispose();
-    };
-  }, [queueInput, resizeTerminal, scheduleResize]);
-
-  const tone = status === "connected" ? "ok" : status === "starting" || status === "reconnecting" ? "warn" : status === "error" ? "fail" : "cyan";
-  const statusLabel = status === "connected" ? "active" : status === "closed" ? "exited" : status;
-
-  return (
-    <div id="pi5-codex-terminal" className={`panel pi5-terminal-panel ${status}`}>
-      <div className="panel-head mobile-panel-head-wrap">
-        <div style={{ display: "flex", alignItems: "center", gap: 10, minWidth: 0 }}>
-          <span className={`chip ${tone}`}><Icon name="brandTerminal" /></span>
-          <div style={{ minWidth: 0 }}>
-            <div style={{ fontSize: 13, fontWeight: 500 }}>Raspberry Pi 5 Codex</div>
-            <div className="mono pi5-terminal-sub">{target} · {config.binary || "codex"}</div>
-          </div>
-        </div>
-        <div className="pi5-terminal-actions">
-          <span className={`pill ${tone}`}><span className={`dot ${tone}`} />{statusLabel}</span>
-          <button className="chip-btn" title="Restart Pi5 Codex session" onClick={restartSession} disabled={status === "starting"}>
-            <Icon name="restart" />
-          </button>
-        </div>
-      </div>
-      <div className="pi5-terminal-meta">
-        <span className="pill ok"><Icon name="zap" size={11} />persistent</span>
-        <span className="pill cyan"><Icon name="network" size={11} />{config.ip || "192.168.0.94"}</span>
-        <span className="pill"><Icon name="command" size={11} />{config.workingDir || "/home/pi5"}</span>
-        {sessionDoc?.id && <span className="pill"><span className="mono">{sessionDoc.id}</span></span>}
-        {error && <span className="pill fail">{error}</span>}
-      </div>
-      <div className="pi5-terminal-surface" ref={terminalEl} />
     </div>
   );
 };
@@ -2625,15 +2286,14 @@ const MobileOverview = ({ feed, banner, alertCount, tickedKpi, setKpiDetail, onR
   </div>
 );
 
-const MobileServices = ({ onServiceAction, onContainerAction }) => (
+const MobileServices = ({ onServiceAction }) => (
   <div className="mobile-tab-stack">
     <ServicesPanel services={MOCK.SERVICES} onAction={onServiceAction} />
     <K3sPanel />
-    <PodmanPanel onAction={onContainerAction} />
   </div>
 );
 
-const MobileLogsPanel = ({ services, containers, jobs, onOpenLogs, onJobLogs }) => (
+const MobileLogsPanel = ({ services, jobs, onOpenLogs, onJobLogs }) => (
   <div className="mobile-tab-stack">
     <div className="panel">
       <div className="panel-head">
@@ -2668,29 +2328,6 @@ const MobileLogsPanel = ({ services, containers, jobs, onOpenLogs, onJobLogs }) 
           </span>
           <Icon name="logs" />
         </button>
-      </div>
-    </div>
-    <div className="panel">
-      <div className="panel-head">
-        <div className="panel-title">Container logs</div>
-        <span className="pill">{containers.length} containers</span>
-      </div>
-      <div className="mobile-log-list">
-        {containers.map((container) => (
-          <button
-            key={container.id}
-            type="button"
-            className="mobile-log-row"
-            onClick={() => onOpenLogs({ sourceType: "podman", id: container.id, lines: 180 }, `${container.label || container.id} logs`, "rootful podman")}
-          >
-            <span className={`chip ${container.status_tone}`}><Icon name="brandContainer" /></span>
-            <span>
-              <span className="mobile-row-title">{container.label || container.id}</span>
-              <span className="mono mobile-row-sub">{container.image}</span>
-            </span>
-            <Icon name="logs" />
-          </button>
-        ))}
       </div>
     </div>
     <div className="panel">
@@ -2732,7 +2369,6 @@ const MobileDashboard = ({
   onRefresh,
   onOpenPalette,
   onServiceAction,
-  onContainerAction,
   onOpsAction,
   onJobLogs,
   onOpenLogs,
@@ -2768,18 +2404,16 @@ const MobileDashboard = ({
         <MobileTopologyPanel onSaved={feed.refresh} onToast={toasts.push} />
       )}
       {activeSection === "services" && (
-        <MobileServices onServiceAction={onServiceAction} onContainerAction={onContainerAction} />
+        <MobileServices onServiceAction={onServiceAction} />
       )}
       {activeSection === "ops" && (
         <div className="mobile-tab-stack mobile-ops-stack">
-          <Pi5CodexTerminalPanel config={MOCK.PI5_CODEX} onToast={toasts.push} />
           <OpsPanel jobs={jobs} onAction={onOpsAction} onLogs={onJobLogs} />
         </div>
       )}
       {activeSection === "logs" && (
         <MobileLogsPanel
           services={MOCK.SERVICES}
-          containers={MOCK.CONTAINERS}
           jobs={jobs}
           onOpenLogs={onOpenLogs}
           onJobLogs={onJobLogs}
@@ -2904,15 +2538,6 @@ function DashboardApp({ onLogout }) {
     }
   }, [feed, toasts]);
 
-  const focusPi5Terminal = useCallback(() => {
-    if (isMobile) setActiveMobileSection("ops");
-    window.setTimeout(() => {
-      const panel = document.getElementById("pi5-codex-terminal");
-      panel?.scrollIntoView({ behavior: "smooth", block: "center" });
-      panel?.querySelector("textarea")?.focus();
-    }, 80);
-  }, [isMobile]);
-
   const handleServiceAction = (kind, svc) => {
     if (kind === "restart") {
       setConfirm({
@@ -2930,49 +2555,12 @@ function DashboardApp({ onLogout }) {
     }
   };
 
-  const handleContainerAction = (kind, c) => {
-    if (kind === "start-all") {
-      setConfirm({
-        title: "Start all discovered containers?",
-        body: <>This will run <span className="mono" style={{ color: "var(--cyan)" }}>podman start</span> for stopped rootful containers discovered by the sidecar.</>,
-        danger: true,
-        confirmLabel: "Start all",
-        onConfirm: () => runOpsAction({ type: "podman", action: "start_all" }),
-      });
-      return;
-    }
-    const lbl = c.id;
-    const displayLabel = c.label || c.id;
-    if (kind === "restart") {
-      setConfirm({
-        title: `Restart container ${displayLabel}?`,
-        body: <>This will run <span className="mono" style={{ color: "var(--cyan)" }}>podman restart {lbl}</span>.</>,
-        danger: true,
-        confirmLabel: "Restart",
-        onConfirm: () => runOpsAction({ type: "podman", action: "restart", container: lbl }),
-      });
-    } else if (kind === "stop") {
-      setConfirm({
-        title: `Stop container ${displayLabel}?`,
-        body: <>This will run <span className="mono" style={{ color: "var(--cyan)" }}>podman stop {lbl}</span>.</>,
-        danger: true,
-        confirmLabel: "Stop",
-        onConfirm: () => runOpsAction({ type: "podman", action: "stop", container: lbl }),
-      });
-    } else if (kind === "logs") {
-      openLogs({ sourceType: "podman", id: lbl, lines: 180 }, `${displayLabel} logs`, "rootful podman");
-    }
-  };
-
   const handlePaletteAction = (action) => {
     if (action.kind === "restart") handleServiceAction("restart", action.svc);
     else if (action.kind === "logs") handleServiceAction("logs", action.svc);
     else if (action.kind === "open") handleServiceAction("open", action.svc);
-    else if (action.kind === "restart-container") handleContainerAction("restart", action.c);
-    else if (action.kind === "logs-container")    handleContainerAction("logs", action.c);
     else if (action.kind === "open-url")          { toasts.push(`Opening ${action.label}...`, "cyan"); window.open(action.url, "_blank", "noopener,noreferrer"); }
     else if (action.kind === "k3s-events")        openLogs({ sourceType: "k3s-events", id: "events", lines: 120 }, "k3s events", "kubectl get events -A");
-    else if (action.kind === "pi5-codex")         focusPi5Terminal();
     else if (action.kind === "refresh")           doRefresh();
   };
 
@@ -3014,7 +2602,6 @@ function DashboardApp({ onLogout }) {
           onRefresh={doRefresh}
           onOpenPalette={() => setPaletteOpen(true)}
           onServiceAction={handleServiceAction}
-          onContainerAction={handleContainerAction}
           onOpsAction={handleOpsAction}
           onJobLogs={handleJobLogs}
           onOpenLogs={openLogs}
@@ -3057,19 +2644,11 @@ function DashboardApp({ onLogout }) {
             {/* k3s panel */}
             <K3sPanel />
 
-            {/* Podman panel */}
-            <PodmanPanel onAction={handleContainerAction} />
-
             {/* Direct ops controls */}
             <OpsPanel
               jobs={jobs}
               onAction={handleOpsAction}
               onLogs={handleJobLogs}
-            />
-
-            <Pi5CodexTerminalPanel
-              config={MOCK.PI5_CODEX}
-              onToast={toasts.push}
             />
 
             {/* Network topology — replaces storage */}

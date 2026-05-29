@@ -40,7 +40,6 @@ const HISTORY = {
   temp:       seriesBound(303, 60, 48, 56, 0.80),
   ssdPct:     seriesBound(404, 60, 21.0, 21.2, 0.95),
   dnsPerMin:  seriesBound(505, 60, 220, 380),
-  containers: Array(60).fill(8).map((v, i) => i > 45 ? 9 : v),
   loadAvg:    seriesBound(606, 60, 0.35, 0.85),
   netIn:      seriesBound(707, 60, 80, 420),
   netOut:     seriesBound(808, 60, 40, 220),
@@ -56,26 +55,15 @@ const KPIS = [
   { id: "temp",  label: "Temperature", glyph: "thermo",         value: 52.4,  suffix: "°C", status: "ok",   delta: "+0.8°", deltaTone: "neutral", history: HISTORY.temp },
   { id: "ssd",   label: "SSD Used",    glyph: "disk",           value: 21.1,  suffix: "%",  status: "ok",   delta: "+0.1%", deltaTone: "neutral", history: HISTORY.ssdPct, sub: "380 / 1800 GB" },
   { id: "dns",   label: "DNS / min",   glyph: "dns",            value: 307,   suffix: "",   status: "ok",   delta: "+12%",  deltaTone: "up",      history: HISTORY.dnsPerMin },
-  { id: "ctn",   label: "Containers",  glyph: "containerStack", value: "8/8", suffix: "",   status: "ok",   delta: "+1",    deltaTone: "up",      history: HISTORY.containers },
 ];
 
 const SERVICES = [
   { id: "adguard", label: "AdGuard Home",  unit: "AdGuardHome.service",         port: "53 · 8080", status: "ok", glyph: "brandShield",     ui: "http://192.168.0.101:8080" },
   { id: "k3s",     label: "k3s",           unit: "k3s.service",                 port: "6443",      status: "ok", glyph: "brandCubes" },
   { id: "kuma",    label: "Uptime Kuma",   unit: "container-uptime-kuma.service",port: "3001",     status: "ok", glyph: "brandHeartbeat",  ui: "http://192.168.0.101:3001" },
-  { id: "esty",    label: "Esty",          unit: "container-esty.service",      port: "8095",      status: "ok", glyph: "brandContainer",  ui: "http://192.168.0.101:8095" },
   { id: "smbd",    label: "Samba (smbd)",  unit: "smbd.service",                port: "445",       status: "ok", glyph: "brandFolderNet" },
   { id: "nmbd",    label: "Samba (nmbd)",  unit: "nmbd.service",                port: "139",       status: "ok", glyph: "brandFolderNet" },
   { id: "ssh",     label: "SSH",           unit: "ssh.service",                 port: "22",        status: "ok", glyph: "brandTerminal" },
-  { id: "podman",  label: "Podman socket", unit: "podman.socket",               port: "—",         status: "ok", glyph: "brandSocket" },
-];
-
-const CONTAINERS = [
-  { id: "uptime-kuma",   image: "docker.io/louislam/uptime-kuma:1", status: "running", uptime: "168 h", restarts: 0, cpu: 0.4, mem: 92,  status_tone: "ok" },
-  { id: "coinbot",       image: "localhost/cabrera-mission-control:latest", status: "running", uptime: "5 h", restarts: 0, cpu: 0.3, mem: 88, status_tone: "ok" },
-  { id: "Coinbot-Mission-Control", label: "Coinbot-Mission-Control", image: "localhost/cabrera-mission-control:latest", status: "running", uptime: "5 h", restarts: 0, cpu: 0.5, mem: 132, status_tone: "ok" },
-  { id: "grid",          image: "localhost/grid:v1",                 status: "running", uptime: "19 h", restarts: 0, cpu: 0.2, mem: 41,  status_tone: "ok" },
-  { id: "esty", label: "Esty", image: "localhost/esty:latest", status: "running", uptime: "2 h", restarts: 0, cpu: 0.2, mem: 74, status_tone: "ok" },
 ];
 
 const WEB_APPS = [
@@ -85,7 +73,6 @@ const WEB_APPS = [
   { id: "coinbot-mission-control", label: "Coinbot-Mission-Control", url: "http://192.168.0.101:8088/", port: "8088", glyph: "brandContainer", kind: "control", status: "ok", statusLabel: "listening" },
   { id: "grid-wiki", label: "GRID Wiki", url: "http://192.168.0.101:8090/", port: "8090", glyph: "globe", kind: "knowledge", status: "ok", statusLabel: "listening" },
   { id: "grid-api", label: "GRID protected listener/API", url: "http://192.168.0.101:7777/", port: "7777", glyph: "brandSocket", kind: "api", status: "ok", statusLabel: "listening" },
-  { id: "esty", label: "Esty", url: "http://192.168.0.101:8095/", port: "8095", glyph: "brandContainer", kind: "app", status: "ok", statusLabel: "listening" },
 ];
 
 const ADGUARD = {
@@ -132,9 +119,8 @@ const K3S = {
 const STORAGE = {
   root:   { used: 12,  total: 32,   fs: "ext4", mount: "/" },
   ssd:    { used: 380, total: 1800, fs: "ext4", mount: "/mnt/ssd", segments: [
-    { label: "podman", value: 24,  tone: "cyan" },
     { label: "nas",    value: 312, tone: "ok" },
-    { label: "other",  value: 44,  tone: "muted" },
+    { label: "other",  value: 68,  tone: "muted" },
   ]},
 };
 
@@ -163,17 +149,6 @@ const HOST = {
   tempC: 52.4,
 };
 
-const PI5_CODEX = {
-  label: "Raspberry Pi 5 Codex",
-  host: "Raspberry Pi 5",
-  ip: "192.168.0.94",
-  user: "pi5",
-  sshTarget: "pi5@192.168.0.94",
-  binary: "/home/pi5/.npm-global/bin/codex",
-  workingDir: "/home/pi5",
-  status: "ready",
-};
-
 const TOPOLOGY = {
   router: { id: "main", name: "TP-Link Archer BE400", ip: "192.168.0.1", model: "Archer BE400" },
   host: { id: "pi4", name: "pi4", ip: "192.168.0.101", linkType: "wired", interface: "Wired", glyph: "cpu" },
@@ -200,4 +175,4 @@ const TOPOLOGY = {
   ],
 };
 
-export const DEFAULT_DASHBOARD = { HISTORY, KPIS, SERVICES, CONTAINERS, WEB_APPS, ADGUARD, K3S, STORAGE, LOGS, HOST, PI5_CODEX, TOPOLOGY };
+export const DEFAULT_DASHBOARD = { HISTORY, KPIS, SERVICES, WEB_APPS, ADGUARD, K3S, STORAGE, LOGS, HOST, TOPOLOGY };

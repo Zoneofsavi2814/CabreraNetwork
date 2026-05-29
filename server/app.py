@@ -4,26 +4,18 @@ from __future__ import annotations
 import argparse
 import base64
 import copy
-import errno
-import fcntl
 import ipaddress
 import json
 import math
 import os
 import platform
-import pty
 import re
 import secrets
-import select
-import shlex
 import shutil
-import signal
 import socket
 import subprocess
 import threading
 import time
-import struct
-import termios
 import uuid
 from collections import Counter, deque
 from datetime import datetime
@@ -54,12 +46,6 @@ AUTH_USER = os.environ.get("PI4_NOC_AUTH_USER", "pi4")
 AUTH_SERVICE = os.environ.get("PI4_NOC_AUTH_SERVICE", "login")
 SESSION_SECRET_FILE = Path(os.environ.get("PI4_NOC_SESSION_SECRET_FILE", "/etc/pi4-noc/session-secret"))
 HISTORY_LEN = 60
-PI5_CODEX_HOST = os.environ.get("PI4_NOC_PI5_CODEX_HOST", "192.168.0.94")
-PI5_CODEX_USER = os.environ.get("PI4_NOC_PI5_CODEX_USER", "pi5")
-PI5_CODEX_BINARY = os.environ.get("PI4_NOC_PI5_CODEX_BINARY", "/home/pi5/.npm-global/bin/codex")
-PI5_CODEX_WORKDIR = os.environ.get("PI4_NOC_PI5_CODEX_WORKDIR", "/home/pi5")
-PI5_CODEX_CONNECT_TIMEOUT = int(os.environ.get("PI4_NOC_PI5_CODEX_CONNECT_TIMEOUT", "5"))
-PI5_CODEX_SESSION_TTL_SECONDS = int(os.environ.get("PI4_NOC_PI5_CODEX_SESSION_TTL_SECONDS", "86400"))
 
 DEFAULT_APS = [
     {
@@ -86,11 +72,9 @@ UNIT_CONFIG = [
     {"id": "adguard", "label": "AdGuard Home", "unit": "AdGuardHome.service", "ports": ["53", "8080"], "glyph": "brandShield", "ui": f"http://{LAN_IP}:8080"},
     {"id": "k3s", "label": "k3s", "unit": "k3s.service", "ports": ["6443"], "glyph": "brandCubes"},
     {"id": "kuma", "label": "Uptime Kuma", "unit": "container-uptime-kuma.service", "ports": ["3001"], "glyph": "brandHeartbeat", "ui": f"http://{LAN_IP}:3001"},
-    {"id": "esty", "label": "Esty", "unit": "container-esty.service", "ports": ["8095"], "glyph": "brandContainer", "ui": f"http://{LAN_IP}:8095"},
     {"id": "smbd", "label": "Samba (smbd)", "unit": "smbd.service", "ports": ["445"], "glyph": "brandFolderNet"},
     {"id": "nmbd", "label": "Samba (nmbd)", "unit": "nmbd.service", "ports": ["139"], "glyph": "brandFolderNet"},
     {"id": "ssh", "label": "SSH", "unit": "ssh.service", "ports": ["22"], "glyph": "brandTerminal"},
-    {"id": "podman", "label": "Podman socket", "unit": "podman.socket", "ports": [], "glyph": "brandSocket"},
 ]
 
 WEB_APP_CONFIG = [
@@ -100,14 +84,11 @@ WEB_APP_CONFIG = [
     {"id": "coinbot-mission-control", "label": "Coinbot-Mission-Control", "url": f"http://{LAN_IP}:8088/", "port": "8088", "glyph": "brandContainer", "kind": "control"},
     {"id": "grid-wiki", "label": "GRID Wiki", "url": f"http://{LAN_IP}:8090/", "port": "8090", "glyph": "globe", "kind": "knowledge"},
     {"id": "grid-api", "label": "GRID protected listener/API", "url": f"http://{LAN_IP}:7777/", "port": "7777", "glyph": "brandSocket", "kind": "api"},
-    {"id": "esty", "label": "Esty", "url": f"http://{LAN_IP}:8095/", "port": "8095", "glyph": "brandContainer", "kind": "app"},
 ]
 
 ALLOWED_UNITS = {row["unit"] for row in UNIT_CONFIG}
 PROTECTED_NAMESPACES = {"kube-system", "kube-public", "kube-node-lease", "ingress-nginx"}
 SAFE_NAME_RE = re.compile(r"^[A-Za-z0-9_.@:/-]{1,160}$")
-SAFE_SSH_TARGET_RE = re.compile(r"^[A-Za-z0-9_.@:-]{1,160}$")
-TERMINAL_SESSION_RE = re.compile(r"^[a-f0-9]{12}$")
 SECRET_RE = re.compile(r"(?i)(password|passwd|token|secret|apikey|api_key|authorization)([=: ]+)(\S+)")
 MAC_RE = re.compile(r"^(?:[0-9a-f]{2}[:-]){5}[0-9a-f]{2}$", re.I)
 AUTH_EXEMPT_API_PATHS = {"/api/session", "/api/login", "/api/logout"}
@@ -177,68 +158,8 @@ def authenticated() -> bool:
     return bool(session.get("authenticated") and session.get("user") == AUTH_USER)
 
 
-def terminal_client_key() -> str:
-    return f"{session.get('user') or AUTH_USER}:{login_client_key()}"
-
-
 def redact(text: str) -> str:
     return SECRET_RE.sub(r"\1\2<redacted>", text or "")
-
-
-def pi5_codex_snapshot() -> dict:
-    return {
-        "label": "Raspberry Pi 5 Codex",
-        "host": "Raspberry Pi 5",
-        "ip": PI5_CODEX_HOST,
-        "user": PI5_CODEX_USER,
-        "sshTarget": f"{PI5_CODEX_USER}@{PI5_CODEX_HOST}",
-        "binary": PI5_CODEX_BINARY,
-        "workingDir": PI5_CODEX_WORKDIR,
-        "status": "ready",
-    }
-
-
-def validate_pi5_codex_target() -> None:
-    if not SAFE_SSH_TARGET_RE.match(PI5_CODEX_USER) or not SAFE_SSH_TARGET_RE.match(PI5_CODEX_HOST):
-        raise ValueError("Pi5 SSH target is invalid")
-
-
-def build_pi5_codex_ssh_command() -> list[str]:
-    validate_pi5_codex_target()
-    remote_cmd = f"cd {shlex.quote(PI5_CODEX_WORKDIR)} && exec {shlex.quote(PI5_CODEX_BINARY)}"
-    return [
-        shutil.which("ssh") or "/usr/bin/ssh",
-        "-tt",
-        "-o",
-        "BatchMode=yes",
-        "-o",
-        f"ConnectTimeout={PI5_CODEX_CONNECT_TIMEOUT}",
-        "-o",
-        "PasswordAuthentication=no",
-        "-o",
-        "StrictHostKeyChecking=accept-new",
-        f"{PI5_CODEX_USER}@{PI5_CODEX_HOST}",
-        remote_cmd,
-    ]
-
-
-def normalize_terminal_size(rows, cols) -> tuple[int, int]:
-    try:
-        rows = int(rows or 28)
-    except Exception:
-        rows = 28
-    try:
-        cols = int(cols or 110)
-    except Exception:
-        cols = 110
-    rows = max(10, min(rows, 80))
-    cols = max(40, min(cols, 240))
-    return rows, cols
-
-
-def sse_event(event: str, payload: dict | str) -> str:
-    data = payload if isinstance(payload, dict) else {"text": str(payload)}
-    return f"event: {event}\ndata: {json.dumps(data, separators=(',', ':'))}\n\n"
 
 
 def run_cmd(argv: list[str], timeout: int = 8) -> subprocess.CompletedProcess:
@@ -705,7 +626,6 @@ class DashboardCache:
             "temp": deque([0.0] * HISTORY_LEN, maxlen=HISTORY_LEN),
             "ssdPct": deque([0.0] * HISTORY_LEN, maxlen=HISTORY_LEN),
             "dnsPerMin": deque([0.0] * HISTORY_LEN, maxlen=HISTORY_LEN),
-            "containers": deque([0.0] * HISTORY_LEN, maxlen=HISTORY_LEN),
             "loadAvg": deque([0.0] * HISTORY_LEN, maxlen=HISTORY_LEN),
             "netIn": deque([0.0] * HISTORY_LEN, maxlen=HISTORY_LEN),
             "netOut": deque([0.0] * HISTORY_LEN, maxlen=HISTORY_LEN),
@@ -750,7 +670,6 @@ class DashboardCache:
             "HISTORY": {k: list(v) for k, v in self.histories.items()},
             "KPIS": [],
             "SERVICES": [],
-            "CONTAINERS": [],
             "ADGUARD": {
                 "queries": 0,
                 "blocked": 0,
@@ -762,7 +681,6 @@ class DashboardCache:
             },
             "K3S": {"version": "unknown", "nodes": [], "podsByNs": [], "events": [], "workloads": []},
             "STORAGE": {},
-            "PI5_CODEX": pi5_codex_snapshot(),
             "TOPOLOGY": {
                 "router": {"name": ROUTER_NAME, "ip": ROUTER_IP, "model": "Archer BE400"},
                 "host": {"name": "pi4", "ip": LAN_IP},
@@ -879,9 +797,8 @@ class DashboardCache:
         root_used = round(root.used / (1024**3))
         ssd_gb = max(1, round(ssd.total / (1024**3)))
         ssd_used = round(ssd.used / (1024**3))
-        podman = self.path_size_gb("/mnt/ssd/podman")
         nas = self.path_size_gb("/mnt/ssd/nas")
-        other = max(0, ssd_used - podman - nas)
+        other = max(0, ssd_used - nas)
         return {
             "root": {"used": root_used, "total": root_gb, "fs": "ext4", "mount": "/"},
             "ssd": {
@@ -890,7 +807,6 @@ class DashboardCache:
                 "fs": "ext4",
                 "mount": "/mnt/ssd",
                 "segments": [
-                    {"label": "podman", "value": podman, "tone": "cyan"},
                     {"label": "nas", "value": nas, "tone": "ok"},
                     {"label": "other", "value": other, "tone": "muted"},
                 ],
@@ -908,9 +824,6 @@ class DashboardCache:
         host = self.snapshot_data.get("HOST", {})
         storage = self.snapshot_data.get("STORAGE", {})
         adguard = self.snapshot_data.get("ADGUARD", {})
-        containers = self.snapshot_data.get("CONTAINERS", [])
-        running = sum(1 for c in containers if c.get("status") == "running")
-        total = len(containers)
         ssd = storage.get("ssd", {"used": 0, "total": 1})
         ssd_pct = (ssd["used"] / max(1, ssd["total"])) * 100
         return [
@@ -919,7 +832,6 @@ class DashboardCache:
             self.kpi("temp", "Temperature", "thermo", host.get("tempC", 0), "°C", "ok" if host.get("tempC", 0) < 70 else "warn", self.histories["temp"]),
             self.kpi("ssd", "SSD Used", "disk", round(ssd_pct, 1), "%", "ok" if ssd_pct < 80 else "warn", self.histories["ssdPct"], f"{ssd.get('used', 0)} / {ssd.get('total', 0)} GB"),
             self.kpi("dns", "DNS / min", "dns", round(self.histories["dnsPerMin"][-1]), "", "ok", self.histories["dnsPerMin"]),
-            self.kpi("ctn", "Containers", "containerStack", f"{running}/{total}", "", "ok" if running == total else "warn", self.histories["containers"]),
         ]
 
     def kpi(self, id_: str, label: str, glyph: str, value, suffix: str, status: str, history, sub: str | None = None) -> dict:
@@ -968,13 +880,10 @@ class DashboardCache:
                 svc["ui"] = cfg["ui"]
             services.append(svc)
 
-        containers = self.collect_containers()
         web_apps = self.web_apps_snapshot(ports)
         with self.lock:
             self.snapshot_data["SERVICES"] = services
-            self.snapshot_data["CONTAINERS"] = containers
             self.snapshot_data["WEB_APPS"] = web_apps
-            self.histories["containers"].append(sum(1 for c in containers if c.get("status") == "running"))
             self.snapshot_data["KPIS"] = self.kpis()
             self.snapshot_data["LOGS"] = self.recent_log_cards()
 
@@ -991,37 +900,6 @@ class DashboardCache:
                 }
             )
         return apps
-
-    def collect_containers(self) -> list[dict]:
-        ps_rows = run_privileged_json(["podman_ps"], timeout=15, default=[]) or []
-        stat_rows = run_privileged_json(["podman_stats"], timeout=15, default=[]) or []
-        stats_by_name = {str(row.get("name") or row.get("Name")): row for row in stat_rows if row.get("name") or row.get("Name")}
-        containers = []
-        for row in ps_rows:
-            names = row.get("Names") or []
-            name = str(names[0] if names else row.get("Name") or row.get("Id") or "unknown")
-            image = row.get("Image") or row.get("ImageName") or "unknown"
-            if row.get("IsInfra") or "podman-pause" in str(image):
-                continue
-            stat = stats_by_name.get(name, {})
-            state = str(row.get("State") or "").lower()
-            status = "running" if state == "running" or row.get("Status", "").startswith("Up") else state or "unknown"
-            mem_usage, _ = parse_bytes_pair(stat.get("mem_usage") or stat.get("MemUsage") or "0 / 0")
-            label = "Coinbot-Mission-Control" if name in {"mission-control", "Coinbot-Mission-Control"} else name
-            containers.append(
-                {
-                    "id": name,
-                    "label": label,
-                    "image": image,
-                    "status": status,
-                    "uptime": row.get("Status") or uptime_label(max(0, time.time() - float(row.get("StartedAt") or row.get("Started") or time.time()))),
-                    "restarts": int(row.get("Restarts") or 0),
-                    "cpu": safe_float(stat.get("cpu_percent") or stat.get("CPU") or 0),
-                    "mem": round(mem_usage),
-                    "status_tone": status_tone(status),
-                }
-            )
-        return containers
 
     def recent_log_cards(self) -> list[dict]:
         cards = []
@@ -1660,10 +1538,6 @@ class DashboardCache:
         with self.lock:
             return copy.deepcopy(self.snapshot_data)
 
-    def known_container(self, name: str) -> bool:
-        with self.lock:
-            return any(c.get("id") == name for c in self.snapshot_data.get("CONTAINERS", []))
-
     def known_workload(self, namespace: str, kind: str, name: str) -> bool:
         with self.lock:
             return any(
@@ -1706,13 +1580,6 @@ class ActionJobs:
             if action != "restart" or unit not in ALLOWED_UNITS:
                 raise ValueError("systemd action is not allowlisted")
             return
-        if type_ == "podman":
-            if action == "start_all":
-                return
-            name = payload.get("container", "")
-            if action not in {"start", "stop", "restart"} or not SAFE_NAME_RE.match(name) or not self.cache.known_container(name):
-                raise ValueError("podman action is not allowlisted")
-            return
         if type_ == "k3s":
             namespace = payload.get("namespace", "")
             kind = payload.get("kind", "")
@@ -1734,8 +1601,6 @@ class ActionJobs:
         type_ = payload.get("type")
         if type_ == "systemd":
             return f"restart {payload.get('unit')}"
-        if type_ == "podman":
-            return "start all containers" if payload.get("action") == "start_all" else f"{payload.get('action')} {payload.get('container')}"
         if type_ == "k3s":
             return f"rollout restart {payload.get('namespace')}/{payload.get('name')}"
         if type_ == "adguard":
@@ -1769,14 +1634,6 @@ class ActionJobs:
             if proc.returncode != 0:
                 raise RuntimeError(proc.stdout.strip())
             return proc.stdout or f"{payload['unit']} restarted"
-        if type_ == "podman":
-            if action == "start_all":
-                proc = run_privileged(["podman_start_all"], timeout=60)
-            else:
-                proc = run_privileged(["podman_action", action, payload["container"]], timeout=60)
-            if proc.returncode != 0:
-                raise RuntimeError(proc.stdout.strip())
-            return proc.stdout or "podman action completed"
         if type_ == "k3s":
             proc = run_cmd(
                 [
@@ -1802,279 +1659,8 @@ class ActionJobs:
         raise ValueError("unsupported action")
 
 
-class Pi5CodexTerminalSession:
-    def __init__(self, client_key: str, rows: int, cols: int) -> None:
-        self.id = uuid.uuid4().hex[:12]
-        self.client_key = client_key
-        self.created_at = time.monotonic()
-        self.last_touched = self.created_at
-        self.created_at_iso = datetime.now().isoformat()
-        self.exit_code: int | None = None
-        self.error = ""
-        self.closed = False
-        self.events: deque[dict] = deque(maxlen=200)
-        self.condition = threading.Condition()
-        self.pid = 0
-        self.fd = -1
-        self.command = build_pi5_codex_ssh_command()
-        self._start(rows, cols)
-
-    def _start(self, rows: int, cols: int) -> None:
-        pid, fd = pty.fork()
-        if pid == 0:
-            try:
-                os.environ["TERM"] = "xterm-256color"
-                os.execvp(self.command[0], self.command)
-            except Exception as exc:
-                os.write(2, f"failed to start Pi5 Codex terminal: {redact(str(exc))}\r\n".encode())
-                os._exit(127)
-
-        self.pid = pid
-        self.fd = fd
-        flags = fcntl.fcntl(self.fd, fcntl.F_GETFL)
-        fcntl.fcntl(self.fd, fcntl.F_SETFL, flags | os.O_NONBLOCK)
-        self.resize(rows, cols)
-        threading.Thread(target=self._read_loop, name=f"pi5-codex-{self.id}", daemon=True).start()
-
-    def public(self) -> dict:
-        meta = pi5_codex_snapshot()
-        return {
-            **meta,
-            "id": self.id,
-            "status": "closed" if self.closed else "connected",
-            "createdAt": self.created_at_iso,
-            "exitCode": self.exit_code,
-            "error": self.error,
-        }
-
-    def touch(self) -> None:
-        self.last_touched = time.monotonic()
-
-    def is_stale(self, now: float, ttl_seconds: int) -> bool:
-        return now - self.last_touched > ttl_seconds
-
-    def write(self, data: str) -> None:
-        if self.closed or self.fd < 0:
-            raise RuntimeError("terminal session is closed")
-        if not isinstance(data, str):
-            raise ValueError("terminal input must be text")
-        if len(data) > 8192:
-            raise ValueError("terminal input is too large")
-        self.touch()
-        os.write(self.fd, data.encode("utf-8", errors="replace"))
-
-    def resize(self, rows: int, cols: int) -> None:
-        rows, cols = normalize_terminal_size(rows, cols)
-        if self.fd >= 0:
-            fcntl.ioctl(self.fd, termios.TIOCSWINSZ, struct.pack("HHHH", rows, cols, 0, 0))
-        self.touch()
-
-    def pop_events(self, timeout: float = 15) -> list[dict]:
-        self.touch()
-        deadline = time.monotonic() + timeout
-        with self.condition:
-            while not self.events and not self.closed:
-                remaining = max(0.0, deadline - time.monotonic())
-                if remaining <= 0:
-                    break
-                self.condition.wait(remaining)
-            out = list(self.events)
-            self.events.clear()
-            return out
-
-    def close(self, reason: str = "closed") -> None:
-        if self.closed:
-            return
-        self._terminate_child()
-        self._finish(None, reason)
-        self._close_fd()
-
-    def _terminate_child(self) -> None:
-        if not self.pid:
-            return
-        try:
-            os.kill(self.pid, signal.SIGHUP)
-        except ProcessLookupError:
-            return
-        except Exception as exc:
-            self.error = redact(str(exc))
-            return
-
-        deadline = time.monotonic() + 1
-        while time.monotonic() < deadline:
-            try:
-                done_pid, _ = os.waitpid(self.pid, os.WNOHANG)
-                if done_pid == self.pid:
-                    return
-            except ChildProcessError:
-                return
-            except OSError as exc:
-                self.error = redact(str(exc))
-                return
-            time.sleep(0.05)
-        try:
-            os.kill(self.pid, signal.SIGKILL)
-        except ProcessLookupError:
-            return
-        except Exception as exc:
-            self.error = redact(str(exc))
-            return
-        try:
-            os.waitpid(self.pid, 0)
-        except Exception:
-            pass
-
-    def _enqueue(self, event: str, data: dict) -> None:
-        with self.condition:
-            self.events.append({"event": event, "data": data})
-            self.condition.notify_all()
-
-    def _finish(self, exit_code: int | None, message: str) -> None:
-        with self.condition:
-            if not self.closed:
-                self.exit_code = exit_code
-                self.closed = True
-                self.events.append({"event": "exit", "data": {"status": "closed", "exitCode": exit_code, "message": message}})
-            self.condition.notify_all()
-
-    def _close_fd(self) -> None:
-        if self.fd < 0:
-            return
-        try:
-            os.close(self.fd)
-        except OSError:
-            pass
-        self.fd = -1
-
-    def _read_loop(self) -> None:
-        status = 0
-        while not self.closed:
-            try:
-                ready, _, _ = select.select([self.fd], [], [], 0.25)
-            except (OSError, ValueError):
-                break
-            if ready:
-                try:
-                    data = os.read(self.fd, 8192)
-                except BlockingIOError:
-                    data = b""
-                except OSError as exc:
-                    if exc.errno == errno.EIO:
-                        break
-                    self.error = redact(str(exc))
-                    break
-                if data:
-                    self._enqueue("output", {"text": data.decode("utf-8", errors="replace")})
-                else:
-                    break
-            try:
-                done_pid, next_status = os.waitpid(self.pid, os.WNOHANG)
-                if done_pid == self.pid:
-                    status = next_status
-                    break
-            except ChildProcessError:
-                break
-            except OSError as exc:
-                self.error = redact(str(exc))
-                break
-
-        exit_code = None
-        try:
-            done_pid, next_status = os.waitpid(self.pid, os.WNOHANG)
-            if done_pid == self.pid:
-                status = next_status
-        except ChildProcessError:
-            pass
-        except OSError:
-            pass
-        try:
-            exit_code = os.waitstatus_to_exitcode(status)
-        except Exception:
-            exit_code = None
-        message = "Pi5 Codex terminal exited" if exit_code in {None, 0} else f"Pi5 Codex terminal exited with status {exit_code}"
-        if self.error:
-            message = self.error
-        self._finish(exit_code, message)
-        self._close_fd()
-
-
-class Pi5CodexTerminalManager:
-    def __init__(self, ttl_seconds: int = PI5_CODEX_SESSION_TTL_SECONDS) -> None:
-        self.ttl_seconds = ttl_seconds
-        self.lock = threading.RLock()
-        self.sessions: dict[str, Pi5CodexTerminalSession] = {}
-        self.by_client: dict[str, str] = {}
-        threading.Thread(target=self._cleanup_loop, name="pi5-codex-cleanup", daemon=True).start()
-
-    def create(self, client_key: str, rows, cols) -> dict:
-        rows, cols = normalize_terminal_size(rows, cols)
-        self.cleanup_stale()
-        with self.lock:
-            old_id = self.by_client.get(client_key)
-            old = self.sessions.get(old_id) if old_id else None
-            if old and not old.closed:
-                old.resize(rows, cols)
-                old.touch()
-                return old.public()
-            if old_id:
-                self.by_client.pop(client_key, None)
-                self.sessions.pop(old_id, None)
-        session_obj = Pi5CodexTerminalSession(client_key, rows, cols)
-        with self.lock:
-            self.sessions[session_obj.id] = session_obj
-            self.by_client[client_key] = session_obj.id
-        return session_obj.public()
-
-    def get(self, session_id: str, client_key: str) -> Pi5CodexTerminalSession | None:
-        if not TERMINAL_SESSION_RE.match(session_id or ""):
-            return None
-        self.cleanup_stale()
-        with self.lock:
-            session_obj = self.sessions.get(session_id)
-            if not session_obj or session_obj.client_key != client_key:
-                return None
-            session_obj.touch()
-            return session_obj
-
-    def close(self, session_id: str, client_key: str, reason: str = "closed") -> dict | None:
-        with self.lock:
-            session_obj = self.sessions.get(session_id)
-            if not session_obj or session_obj.client_key != client_key:
-                return None
-            self.sessions.pop(session_id, None)
-            if self.by_client.get(client_key) == session_id:
-                self.by_client.pop(client_key, None)
-        session_obj.close(reason)
-        return session_obj.public()
-
-    def remove(self, session_id: str) -> None:
-        with self.lock:
-            session_obj = self.sessions.pop(session_id, None)
-            if session_obj and self.by_client.get(session_obj.client_key) == session_id:
-                self.by_client.pop(session_obj.client_key, None)
-
-    def cleanup_stale(self) -> None:
-        now = time.monotonic()
-        stale: list[Pi5CodexTerminalSession] = []
-        with self.lock:
-            for session_id, session_obj in list(self.sessions.items()):
-                if session_obj.is_stale(now, self.ttl_seconds) or (session_obj.closed and now - session_obj.last_touched > 10):
-                    stale.append(session_obj)
-                    self.sessions.pop(session_id, None)
-                    if self.by_client.get(session_obj.client_key) == session_id:
-                        self.by_client.pop(session_obj.client_key, None)
-        for session_obj in stale:
-            session_obj.close("stale")
-
-    def _cleanup_loop(self) -> None:
-        while True:
-            time.sleep(60)
-            self.cleanup_stale()
-
-
 cache = DashboardCache()
 jobs = ActionJobs(cache)
-pi5_codex_terminals = Pi5CodexTerminalManager()
 app = Flask(__name__, static_folder=str(DIST_DIR), static_url_path="")
 app.config.update(
     SECRET_KEY=load_session_secret(),
@@ -2139,76 +1725,6 @@ def api_events():
     return Response(stream(), mimetype="text/event-stream", headers={"Cache-Control": "no-cache", "Connection": "keep-alive"})
 
 
-@app.post("/api/pi5-codex/sessions")
-def api_pi5_codex_session_create():
-    payload = request.get_json(force=True, silent=True) or {}
-    try:
-        session_doc = pi5_codex_terminals.create(terminal_client_key(), payload.get("rows"), payload.get("cols"))
-    except Exception as exc:
-        return jsonify({"error": redact(str(exc))}), 400
-    return jsonify(session_doc), 201
-
-
-@app.get("/api/pi5-codex/sessions/<session_id>/stream")
-def api_pi5_codex_session_stream(session_id: str):
-    session_obj = pi5_codex_terminals.get(session_id, terminal_client_key())
-    if not session_obj:
-        return jsonify({"error": "terminal session not found"}), 404
-
-    def stream():
-        yield sse_event("status", session_obj.public())
-        while True:
-            events = session_obj.pop_events(timeout=15)
-            if events:
-                for item in events:
-                    yield sse_event(item["event"], item["data"])
-                    if item["event"] == "exit":
-                        pi5_codex_terminals.remove(session_obj.id)
-                        return
-                continue
-            if session_obj.closed:
-                pi5_codex_terminals.remove(session_obj.id)
-                return
-            yield ": keepalive\n\n"
-
-    return Response(stream(), mimetype="text/event-stream", headers={"Cache-Control": "no-cache", "Connection": "keep-alive"})
-
-
-@app.post("/api/pi5-codex/sessions/<session_id>/input")
-def api_pi5_codex_session_input(session_id: str):
-    session_obj = pi5_codex_terminals.get(session_id, terminal_client_key())
-    if not session_obj:
-        return jsonify({"error": "terminal session not found"}), 404
-    payload = request.get_json(force=True, silent=True) or {}
-    try:
-        session_obj.write(payload.get("data", ""))
-    except Exception as exc:
-        return jsonify({"error": redact(str(exc))}), 400
-    return jsonify({"ok": True})
-
-
-@app.post("/api/pi5-codex/sessions/<session_id>/resize")
-def api_pi5_codex_session_resize(session_id: str):
-    session_obj = pi5_codex_terminals.get(session_id, terminal_client_key())
-    if not session_obj:
-        return jsonify({"error": "terminal session not found"}), 404
-    payload = request.get_json(force=True, silent=True) or {}
-    try:
-        rows, cols = normalize_terminal_size(payload.get("rows"), payload.get("cols"))
-        session_obj.resize(rows, cols)
-    except Exception as exc:
-        return jsonify({"error": redact(str(exc))}), 400
-    return jsonify({"ok": True, "rows": rows, "cols": cols})
-
-
-@app.delete("/api/pi5-codex/sessions/<session_id>")
-def api_pi5_codex_session_delete(session_id: str):
-    session_doc = pi5_codex_terminals.close(session_id, terminal_client_key())
-    if not session_doc:
-        return jsonify({"error": "terminal session not found"}), 404
-    return jsonify(session_doc)
-
-
 @app.get("/api/logs")
 def api_logs():
     source_type = request.args.get("sourceType", "")
@@ -2222,12 +1738,6 @@ def api_logs():
             return jsonify({"error": "unit is not allowlisted"}), 400
         text = run_privileged_text(["journal", id_, str(lines)], timeout=20)
         return jsonify({"title": f"{id_} logs", "hint": "journalctl", "text": text})
-
-    if source_type == "podman":
-        if not SAFE_NAME_RE.match(id_) or not cache.known_container(id_):
-            return jsonify({"error": "container is not allowlisted"}), 400
-        text = run_privileged_text(["podman_logs", id_, str(lines)], timeout=20)
-        return jsonify({"title": f"{id_} logs", "hint": "podman logs", "text": text})
 
     if source_type == "k3s-events":
         events = cache.snapshot().get("K3S", {}).get("events", [])
