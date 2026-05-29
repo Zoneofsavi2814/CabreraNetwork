@@ -70,7 +70,6 @@ const WEB_APPS = [
   { id: "cabrera-network", label: "Cabrera Network", url: "http://192.168.0.101/", port: "80", glyph: "activity", kind: "dashboard", status: "ok", statusLabel: "listening" },
   { id: "adguard", label: "AdGuard Home", url: "http://192.168.0.101:8080/", port: "8080", glyph: "brandShield", kind: "admin", status: "ok", statusLabel: "listening" },
   { id: "uptime-kuma", label: "Uptime Kuma", url: "http://192.168.0.101:3001/", port: "3001", glyph: "brandHeartbeat", kind: "monitoring", status: "ok", statusLabel: "listening" },
-  { id: "coinbot-mission-control", label: "Coinbot-Mission-Control", url: "http://192.168.0.101:8088/", port: "8088", glyph: "brandContainer", kind: "control", status: "ok", statusLabel: "listening" },
   { id: "grid-wiki", label: "GRID Wiki", url: "http://192.168.0.101:8090/", port: "8090", glyph: "globe", kind: "knowledge", status: "ok", statusLabel: "listening" },
   { id: "grid-api", label: "GRID protected listener/API", url: "http://192.168.0.101:7777/", port: "7777", glyph: "brandSocket", kind: "api", status: "ok", statusLabel: "listening" },
 ];

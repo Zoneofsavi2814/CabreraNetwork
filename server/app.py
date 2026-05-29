@@ -81,7 +81,6 @@ WEB_APP_CONFIG = [
     {"id": "cabrera-network", "label": "Cabrera Network", "url": f"http://{LAN_IP}/", "port": "80", "glyph": "activity", "kind": "dashboard"},
     {"id": "adguard", "label": "AdGuard Home", "url": f"http://{LAN_IP}:8080/", "port": "8080", "glyph": "brandShield", "kind": "admin"},
     {"id": "uptime-kuma", "label": "Uptime Kuma", "url": f"http://{LAN_IP}:3001/", "port": "3001", "glyph": "brandHeartbeat", "kind": "monitoring"},
-    {"id": "coinbot-mission-control", "label": "Coinbot-Mission-Control", "url": f"http://{LAN_IP}:8088/", "port": "8088", "glyph": "brandContainer", "kind": "control"},
     {"id": "grid-wiki", "label": "GRID Wiki", "url": f"http://{LAN_IP}:8090/", "port": "8090", "glyph": "globe", "kind": "knowledge"},
     {"id": "grid-api", "label": "GRID protected listener/API", "url": f"http://{LAN_IP}:7777/", "port": "7777", "glyph": "brandSocket", "kind": "api"},
 ]

@@ -195,7 +195,6 @@ const IconLegend = ({ open, onClose }) => {
   const brand = [
     { name: "brandShield",    label: "DNS / AdGuard Home" },
     { name: "brandCubes",     label: "Kubernetes / k3s" },
-    { name: "brandContainer", label: "Containerized app" },
     { name: "brandFolderNet", label: "Samba / NAS share" },
     { name: "brandTerminal",  label: "SSH" },
     { name: "brandSocket",    label: "Socket / API listener" },

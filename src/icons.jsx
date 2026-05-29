@@ -78,24 +78,6 @@ const paths = {
     <line x1="12" y1="12" x2="12" y2="20.5"/>
   </>,
 
-  // Podman-style: a seal/mammal silhouette — head + body + flippers
-  brandContainer: <>
-    <circle cx="12" cy="9" r="3"/>
-    <path d="M6 18c0-3.5 2.7-5.5 6-5.5s6 2 6 5.5"/>
-    <line x1="11" y1="9" x2="11" y2="9.01"/>
-    <line x1="13" y1="9" x2="13" y2="9.01"/>
-    <path d="M5 17.5c-1 .2-2 .5-2.5 1.2"/>
-    <path d="M19 17.5c1 .2 2 .5 2.5 1.2"/>
-  </>,
-
-  // Stacked containers (the previous brandContainer) — keep available for Podman list rows
-  brandContainerStack: <>
-    <rect x="3" y="6" width="18" height="12" rx="1.5"/>
-    <line x1="8" y1="6" x2="8" y2="18"/>
-    <line x1="12" y1="6" x2="12" y2="18"/>
-    <line x1="16" y1="6" x2="16" y2="18"/>
-  </>,
-
   // Folder + network branch — for Samba/NAS share
   brandFolderNet: <>
     <path d="M3 7a1 1 0 0 1 1-1h5l2 2h9a1 1 0 0 1 1 1v9a1 1 0 0 1-1 1H4a1 1 0 0 1-1-1V7z"/>
