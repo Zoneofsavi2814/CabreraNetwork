@@ -15,7 +15,7 @@
 
 - Canonical Mac source now lives at `/Users/christophercabrera/Desktop/GitlabRepos/CabreraNetwork`.
 - Original working source was copied from `/Users/christophercabrera/Desktop/Sandbox/RaspberryPi4/Rp4`.
-- GitHub remote is `git@github.com:Zoneofsavi2814/CabreraNetwork.git`.
+- Git remote is `git@gitlab.com:quintero4/CabreraNetwork.git` (GitLab).
 - Initial working branch for the imported dashboard is `initial`.
 
 ## Dashboard Architecture
