@@ -4,9 +4,11 @@ from __future__ import annotations
 import argparse
 import base64
 import copy
+import gzip
 import ipaddress
 import json
 import math
+import mimetypes
 import os
 import platform
 import re
@@ -71,7 +73,8 @@ LINK_SOURCE_RANK = {"router": 60, "configured_ap": 55, "adguard": 15, "resolved"
 UNIT_CONFIG = [
     {"id": "adguard", "label": "AdGuard Home", "unit": "AdGuardHome.service", "ports": ["53", "8080"], "glyph": "brandShield", "ui": f"http://{LAN_IP}:8080"},
     {"id": "k3s", "label": "k3s", "unit": "k3s.service", "ports": ["6443"], "glyph": "brandCubes"},
-    {"id": "kuma", "label": "Uptime Kuma", "unit": "container-uptime-kuma.service", "ports": ["3001"], "glyph": "brandHeartbeat", "ui": f"http://{LAN_IP}:3001"},
+    {"id": "kuma", "label": "Uptime Kuma", "kind": "k3s", "namespace": "homelab", "workloadKind": "deployment", "workload": "uptime-kuma", "ports": ["3001"], "glyph": "brandHeartbeat", "ui": f"http://{LAN_IP}:3001"},
+    {"id": "grid", "label": "GRID", "kind": "k3s", "namespace": "homelab", "workloadKind": "deployment", "workload": "grid", "ports": ["8090", "7777"], "glyph": "globe", "ui": f"http://{LAN_IP}:8090"},
     {"id": "smbd", "label": "Samba (smbd)", "unit": "smbd.service", "ports": ["445"], "glyph": "brandFolderNet"},
     {"id": "nmbd", "label": "Samba (nmbd)", "unit": "nmbd.service", "ports": ["139"], "glyph": "brandFolderNet"},
     {"id": "ssh", "label": "SSH", "unit": "ssh.service", "ports": ["22"], "glyph": "brandTerminal"},
@@ -85,7 +88,8 @@ WEB_APP_CONFIG = [
     {"id": "grid-api", "label": "GRID protected listener/API", "url": f"http://{LAN_IP}:7777/", "port": "7777", "glyph": "brandSocket", "kind": "api"},
 ]
 
-ALLOWED_UNITS = {row["unit"] for row in UNIT_CONFIG}
+ALLOWED_UNITS = {row["unit"] for row in UNIT_CONFIG if "unit" in row}
+ALLOWED_WORKLOAD_LOGS = {(row["namespace"], row["workloadKind"], row["workload"]) for row in UNIT_CONFIG if row.get("kind") == "k3s"}
 PROTECTED_NAMESPACES = {"kube-system", "kube-public", "kube-node-lease", "ingress-nginx"}
 SAFE_NAME_RE = re.compile(r"^[A-Za-z0-9_.@:/-]{1,160}$")
 SECRET_RE = re.compile(r"(?i)(password|passwd|token|secret|apikey|api_key|authorization)([=: ]+)(\S+)")
@@ -328,6 +332,31 @@ def listening_ports() -> set[str]:
         if port.isdigit():
             ports.add(port)
     return ports
+
+
+def tcp_probe(port: str, host: str = "127.0.0.1", timeout: float = 0.6) -> bool:
+    try:
+        with socket.create_connection((host, int(port)), timeout=timeout):
+            return True
+    except Exception:
+        return False
+
+
+def probe_ports(ports: set[str], listening: set[str]) -> dict[str, bool]:
+    """Resolve reachability for each port. Ports already in the ss LISTEN set are
+    trusted; the rest get a real TCP connect, which also covers k3s hostPort
+    services exposed through iptables DNAT (no LISTEN socket ever shows up)."""
+    results = {p: True for p in ports if p in listening}
+    pending = [p for p in ports if p not in listening]
+    if pending:
+        threads = []
+        for p in pending:
+            t = threading.Thread(target=lambda p=p: results.__setitem__(p, tcp_probe(p)), daemon=True)
+            t.start()
+            threads.append(t)
+        for t in threads:
+            t.join(timeout=2)
+    return {p: results.get(p, False) for p in ports}
 
 
 def read_adguard_creds() -> dict[str, str]:
@@ -691,7 +720,7 @@ class DashboardCache:
                 "updatedAt": datetime.now().isoformat(),
             },
             "LOGS": [],
-            "WEB_APPS": self.web_apps_snapshot(set()),
+            "WEB_APPS": self.web_apps_snapshot({}),
             "HOST": {},
             "META": {"updatedAt": datetime.now().isoformat(), "source": "pi4-noc-sidecar"},
         }
@@ -855,47 +884,88 @@ class DashboardCache:
         return out
 
     def update_services(self) -> None:
-        ports = listening_ports()
+        listening = listening_ports()
+        all_ports = {str(p) for cfg in UNIT_CONFIG for p in cfg["ports"]} | {str(cfg["port"]) for cfg in WEB_APP_CONFIG}
+        reachable = probe_ports(all_ports, listening)
         services = []
         for cfg in UNIT_CONFIG:
-            show = service_show(cfg["unit"])
-            active = show.get("ActiveState", "unknown")
-            sub = show.get("SubState", "unknown")
-            port_ok = all(p in ports for p in cfg["ports"]) if cfg["ports"] else active in {"active", "activating"}
-            ok = active == "active" and port_ok
-            svc = {
-                "id": cfg["id"],
-                "label": cfg["label"],
-                "unit": cfg["unit"],
-                "port": " · ".join(cfg["ports"]) if cfg["ports"] else "—",
-                "status": "ok" if ok else "warn" if active in {"active", "activating"} else "fail",
-                "glyph": cfg["glyph"],
-                "activeState": active,
-                "subState": sub,
-                "pid": show.get("MainPID", ""),
-                "restarts": int(show.get("NRestarts") or 0),
-            }
+            port_ok = all(reachable.get(str(p)) for p in cfg["ports"]) if cfg["ports"] else None
+            if cfg.get("kind") == "k3s":
+                svc = self.k3s_service_row(cfg, port_ok)
+            else:
+                show = service_show(cfg["unit"])
+                active = show.get("ActiveState", "unknown")
+                ok = active == "active" and (port_ok if port_ok is not None else active in {"active", "activating"})
+                svc = {
+                    "id": cfg["id"],
+                    "label": cfg["label"],
+                    "unit": cfg["unit"],
+                    "port": " · ".join(cfg["ports"]) if cfg["ports"] else "—",
+                    "status": "ok" if ok else "warn" if active in {"active", "activating"} else "fail",
+                    "glyph": cfg["glyph"],
+                    "activeState": active,
+                    "subState": show.get("SubState", "unknown"),
+                    "pid": show.get("MainPID", ""),
+                    "restarts": int(show.get("NRestarts") or 0),
+                }
             if cfg.get("ui"):
                 svc["ui"] = cfg["ui"]
             services.append(svc)
 
-        web_apps = self.web_apps_snapshot(ports)
+        web_apps = self.web_apps_snapshot(reachable)
         with self.lock:
             self.snapshot_data["SERVICES"] = services
             self.snapshot_data["WEB_APPS"] = web_apps
             self.snapshot_data["KPIS"] = self.kpis()
             self.snapshot_data["LOGS"] = self.recent_log_cards()
 
-    def web_apps_snapshot(self, ports: set[str]) -> list[dict]:
+    def k3s_service_row(self, cfg: dict, port_ok: bool | None) -> dict:
+        with self.lock:
+            workload = next(
+                (
+                    w for w in self.snapshot_data.get("K3S", {}).get("workloads", [])
+                    if w.get("namespace") == cfg["namespace"] and w.get("kind") == cfg["workloadKind"] and w.get("name") == cfg["workload"]
+                ),
+                None,
+            )
+        if workload:
+            ready, desired = workload.get("ready", 0), workload.get("desired", 1)
+            rolled_out = desired > 0 and ready >= desired
+            active = "active" if rolled_out else "degraded"
+            sub = f"{ready}/{desired} ready"
+        else:
+            # k3s data refreshes on the slower loop; until it lands, the port
+            # probe is the only health signal we have.
+            rolled_out = bool(port_ok)
+            active = "active" if rolled_out else "unknown"
+            sub = "awaiting k3s data"
+        ok = rolled_out and (port_ok if port_ok is not None else True)
+        return {
+            "id": cfg["id"],
+            "label": cfg["label"],
+            "kind": "k3s",
+            "namespace": cfg["namespace"],
+            "workloadKind": cfg["workloadKind"],
+            "workload": cfg["workload"],
+            "unit": f"k3s · {cfg['namespace']}/{cfg['workload']}",
+            "port": " · ".join(cfg["ports"]) if cfg["ports"] else "—",
+            "status": "ok" if ok else "warn" if rolled_out or workload is None else "fail",
+            "glyph": cfg["glyph"],
+            "activeState": active,
+            "subState": sub,
+            "pid": "",
+            "restarts": 0,
+        }
+
+    def web_apps_snapshot(self, reachable: dict[str, bool]) -> list[dict]:
         apps = []
         for cfg in WEB_APP_CONFIG:
-            port = str(cfg["port"])
-            ok = port in ports
+            ok = bool(reachable.get(str(cfg["port"])))
             apps.append(
                 {
                     **cfg,
                     "status": "ok" if ok else "warn",
-                    "statusLabel": "listening" if ok else "not listening",
+                    "statusLabel": "online" if ok else "offline",
                 }
             )
         return apps
@@ -1660,7 +1730,9 @@ class ActionJobs:
 
 cache = DashboardCache()
 jobs = ActionJobs(cache)
-app = Flask(__name__, static_folder=str(DIST_DIR), static_url_path="")
+# No Flask static handler: every dist file goes through send_dist so the
+# precompressed .gz siblings and cache headers apply uniformly.
+app = Flask(__name__, static_folder=None)
 app.config.update(
     SECRET_KEY=load_session_secret(),
     SESSION_COOKIE_HTTPONLY=True,
@@ -1676,8 +1748,26 @@ def require_api_auth():
 
 
 @app.after_request
-def no_buffering(resp):
+def finalize_response(resp):
     resp.headers["X-Accel-Buffering"] = "no"
+    path = request.path
+    if path.startswith("/assets/"):
+        # Vite emits content-hashed filenames, so assets are immutable.
+        resp.headers["Cache-Control"] = "public, max-age=31536000, immutable"
+    elif path == "/" or path.endswith(".html"):
+        resp.headers["Cache-Control"] = "no-cache"
+    if (
+        resp.status_code == 200
+        and resp.mimetype == "application/json"
+        and not resp.direct_passthrough
+        and "Content-Encoding" not in resp.headers
+        and "gzip" in (request.headers.get("Accept-Encoding") or "").lower()
+    ):
+        body = resp.get_data()
+        if len(body) > 1024:
+            resp.set_data(gzip.compress(body, 6))
+            resp.headers["Content-Encoding"] = "gzip"
+            resp.headers.setdefault("Vary", "Accept-Encoding")
     return resp
 
 
@@ -1717,9 +1807,15 @@ def api_snapshot():
 @app.get("/api/events")
 def api_events():
     def stream():
+        last_sent = None
         while True:
-            yield f"data: {json.dumps(cache.snapshot(), separators=(',', ':'))}\n\n"
-            time.sleep(1)
+            payload = json.dumps(cache.snapshot(), separators=(",", ":"))
+            if payload != last_sent:
+                last_sent = payload
+                yield f"data: {payload}\n\n"
+            else:
+                yield ": keepalive\n\n"
+            time.sleep(2)
 
     return Response(stream(), mimetype="text/event-stream", headers={"Cache-Control": "no-cache", "Connection": "keep-alive"})
 
@@ -1749,6 +1845,14 @@ def api_logs():
         argv = ["/usr/local/bin/kubectl", "logs", "-n", namespace, id_, "--tail", str(lines)]
         if container and SAFE_NAME_RE.match(container):
             argv.extend(["-c", container])
+        text = run_text(argv, timeout=20)
+        return jsonify({"title": f"{namespace}/{id_} logs", "hint": "kubectl logs", "text": text})
+
+    if source_type == "k3s-workload":
+        kind = request.args.get("kind", "deployment")
+        if (namespace, kind, id_) not in ALLOWED_WORKLOAD_LOGS:
+            return jsonify({"error": "workload is not allowlisted"}), 400
+        argv = ["/usr/local/bin/kubectl", "logs", "-n", namespace, f"{kind}/{id_}", "--tail", str(lines)]
         text = run_text(argv, timeout=20)
         return jsonify({"title": f"{namespace}/{id_} logs", "hint": "kubectl logs", "text": text})
 
@@ -1789,17 +1893,30 @@ def api_topology_aliases_update():
     return jsonify(doc)
 
 
+def send_dist(path: str):
+    """Serve a dist file, preferring a build-time .gz sibling when the client
+    accepts gzip — the Pi never compresses large bundles at request time."""
+    gz = DIST_DIR / f"{path}.gz"
+    if gz.is_file() and "gzip" in (request.headers.get("Accept-Encoding") or "").lower():
+        mimetype = mimetypes.guess_type(path)[0] or "application/octet-stream"
+        resp = send_from_directory(DIST_DIR, f"{path}.gz", mimetype=mimetype)
+        resp.headers["Content-Encoding"] = "gzip"
+        resp.headers["Vary"] = "Accept-Encoding"
+        return resp
+    return send_from_directory(DIST_DIR, path)
+
+
 @app.get("/")
 def index():
-    return send_from_directory(DIST_DIR, "index.html")
+    return send_dist("index.html")
 
 
 @app.get("/<path:path>")
 def static_or_index(path: str):
     target = DIST_DIR / path
     if target.exists() and target.is_file():
-        return send_from_directory(DIST_DIR, path)
-    return send_from_directory(DIST_DIR, "index.html")
+        return send_dist(path)
+    return send_dist("index.html")
 
 
 def parse_args():

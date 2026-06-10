@@ -101,7 +101,7 @@ export const useDashboardFeed = () => {
   return { data, connected, stale, loading, error, lastRefresh, refresh };
 };
 
-export const fetchLogs = ({ sourceType, id, lines = 160, namespace, container }) => {
+export const fetchLogs = ({ sourceType, id, lines = 160, namespace, container, kind }) => {
   const params = new URLSearchParams({
     sourceType,
     id,
@@ -109,6 +109,7 @@ export const fetchLogs = ({ sourceType, id, lines = 160, namespace, container })
   });
   if (namespace) params.set("namespace", namespace);
   if (container) params.set("container", container);
+  if (kind) params.set("kind", kind);
   return apiFetch(`/api/logs?${params}`);
 };
 

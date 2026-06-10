@@ -65,6 +65,12 @@ const useMediaQuery = (query) => {
   return matches;
 };
 
+const serviceLogRequest = (svc) => (
+  svc.kind === "k3s"
+    ? { sourceType: "k3s-workload", id: svc.workload, namespace: svc.namespace, kind: svc.workloadKind, lines: 180 }
+    : { sourceType: "systemd", id: svc.unit, lines: 180 }
+);
+
 const MOBILE_SECTIONS = [
   { id: "overview", label: "Overview", icon: "activity" },
   { id: "network", label: "Network", icon: "network" },
@@ -651,7 +657,16 @@ const AdGuardHero = () => {
             <span className="mono" style={{ color: "var(--cyan)" }}>{a.upstream}</span>
           </span>
           <span className="pill ok"><span className="dot ok" /> active</span>
-          <button className="chip-btn" title="Open admin UI"><Icon name="external" /></button>
+          <button
+            className="chip-btn"
+            title="Open admin UI"
+            onClick={() => {
+              const url = (MOCK.WEB_APPS || []).find((app) => app.id === "adguard")?.url;
+              if (url) window.open(url, "_blank", "noopener,noreferrer");
+            }}
+          >
+            <Icon name="external" />
+          </button>
         </div>
       </div>
       <div className="adguard-hero-grid" style={{
@@ -2305,7 +2320,7 @@ const MobileLogsPanel = ({ services, jobs, onOpenLogs, onJobLogs }) => (
             key={svc.id}
             type="button"
             className="mobile-log-row"
-            onClick={() => onOpenLogs({ sourceType: "systemd", id: svc.unit, lines: 180 }, `${svc.label} logs`, svc.unit)}
+            onClick={() => onOpenLogs(serviceLogRequest(svc), `${svc.label} logs`, svc.unit)}
           >
             <span className={`chip ${svc.status === "ok" ? "ok" : svc.status === "warn" ? "warn" : "fail"}`}><Icon name={svc.glyph} /></span>
             <span>
@@ -2538,16 +2553,23 @@ function DashboardApp({ onLogout }) {
   }, [feed, toasts]);
 
   const handleServiceAction = (kind, svc) => {
+    const isK3s = svc.kind === "k3s";
     if (kind === "restart") {
       setConfirm({
         title: `Restart ${svc.label}?`,
-        body: <>This will run <span className="mono" style={{ color: "var(--cyan)" }}>systemctl restart {svc.unit}</span>. Service will be unavailable for a few seconds.</>,
+        body: isK3s
+          ? <>This will run <span className="mono" style={{ color: "var(--cyan)" }}>kubectl rollout restart {svc.workloadKind}/{svc.workload} -n {svc.namespace}</span>. Pods restart one at a time.</>
+          : <>This will run <span className="mono" style={{ color: "var(--cyan)" }}>systemctl restart {svc.unit}</span>. Service will be unavailable for a few seconds.</>,
         danger: true,
         confirmLabel: "Restart",
-        onConfirm: () => runOpsAction({ type: "systemd", action: "restart", unit: svc.unit }),
+        onConfirm: () => runOpsAction(
+          isK3s
+            ? { type: "k3s", action: "rollout_restart", namespace: svc.namespace, kind: svc.workloadKind, name: svc.workload }
+            : { type: "systemd", action: "restart", unit: svc.unit }
+        ),
       });
     } else if (kind === "logs") {
-      openLogs({ sourceType: "systemd", id: svc.unit, lines: 180 }, `${svc.label} logs`, svc.unit);
+      openLogs(serviceLogRequest(svc), `${svc.label} logs`, svc.unit);
     } else if (kind === "open") {
       toasts.push(`Opening ${svc.ui}…`, "cyan");
       window.open(svc.ui, "_blank", "noopener,noreferrer");

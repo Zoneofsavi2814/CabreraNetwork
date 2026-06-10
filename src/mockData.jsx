@@ -60,18 +60,19 @@ const KPIS = [
 const SERVICES = [
   { id: "adguard", label: "AdGuard Home",  unit: "AdGuardHome.service",         port: "53 · 8080", status: "ok", glyph: "brandShield",     ui: "http://192.168.0.101:8080" },
   { id: "k3s",     label: "k3s",           unit: "k3s.service",                 port: "6443",      status: "ok", glyph: "brandCubes" },
-  { id: "kuma",    label: "Uptime Kuma",   unit: "container-uptime-kuma.service",port: "3001",     status: "ok", glyph: "brandHeartbeat",  ui: "http://192.168.0.101:3001" },
+  { id: "kuma",    label: "Uptime Kuma",   kind: "k3s", namespace: "homelab", workloadKind: "deployment", workload: "uptime-kuma", unit: "k3s · homelab/uptime-kuma", port: "3001",        status: "ok", glyph: "brandHeartbeat", ui: "http://192.168.0.101:3001" },
+  { id: "grid",    label: "GRID",          kind: "k3s", namespace: "homelab", workloadKind: "deployment", workload: "grid",        unit: "k3s · homelab/grid",        port: "8090 · 7777", status: "ok", glyph: "globe",          ui: "http://192.168.0.101:8090" },
   { id: "smbd",    label: "Samba (smbd)",  unit: "smbd.service",                port: "445",       status: "ok", glyph: "brandFolderNet" },
   { id: "nmbd",    label: "Samba (nmbd)",  unit: "nmbd.service",                port: "139",       status: "ok", glyph: "brandFolderNet" },
   { id: "ssh",     label: "SSH",           unit: "ssh.service",                 port: "22",        status: "ok", glyph: "brandTerminal" },
 ];
 
 const WEB_APPS = [
-  { id: "cabrera-network", label: "Cabrera Network", url: "http://192.168.0.101/", port: "80", glyph: "activity", kind: "dashboard", status: "ok", statusLabel: "listening" },
-  { id: "adguard", label: "AdGuard Home", url: "http://192.168.0.101:8080/", port: "8080", glyph: "brandShield", kind: "admin", status: "ok", statusLabel: "listening" },
-  { id: "uptime-kuma", label: "Uptime Kuma", url: "http://192.168.0.101:3001/", port: "3001", glyph: "brandHeartbeat", kind: "monitoring", status: "ok", statusLabel: "listening" },
-  { id: "grid-wiki", label: "GRID Wiki", url: "http://192.168.0.101:8090/", port: "8090", glyph: "globe", kind: "knowledge", status: "ok", statusLabel: "listening" },
-  { id: "grid-api", label: "GRID protected listener/API", url: "http://192.168.0.101:7777/", port: "7777", glyph: "brandSocket", kind: "api", status: "ok", statusLabel: "listening" },
+  { id: "cabrera-network", label: "Cabrera Network", url: "http://192.168.0.101/", port: "80", glyph: "activity", kind: "dashboard", status: "ok", statusLabel: "online" },
+  { id: "adguard", label: "AdGuard Home", url: "http://192.168.0.101:8080/", port: "8080", glyph: "brandShield", kind: "admin", status: "ok", statusLabel: "online" },
+  { id: "uptime-kuma", label: "Uptime Kuma", url: "http://192.168.0.101:3001/", port: "3001", glyph: "brandHeartbeat", kind: "monitoring", status: "ok", statusLabel: "online" },
+  { id: "grid-wiki", label: "GRID Wiki", url: "http://192.168.0.101:8090/", port: "8090", glyph: "globe", kind: "knowledge", status: "ok", statusLabel: "online" },
+  { id: "grid-api", label: "GRID protected listener/API", url: "http://192.168.0.101:7777/", port: "7777", glyph: "brandSocket", kind: "api", status: "ok", statusLabel: "online" },
 ];
 
 const ADGUARD = {
