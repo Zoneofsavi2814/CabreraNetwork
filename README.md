@@ -1,6 +1,6 @@
 # Cabrera Network
 
-Raspberry Pi 4 control-room dashboard for the home network. It combines a Vite/React UI with a Flask sidecar that reports host metrics, services, Podman containers, AdGuard, k3s, topology, logs, allowlisted actions, and web app links.
+Raspberry Pi 4 control-room dashboard for the home network. It combines a Vite/React UI with a Flask sidecar that reports host metrics, services, AdGuard, k3s, topology, logs, allowlisted actions, and web app links.
 
 ## Local Development
 
@@ -14,7 +14,7 @@ python3 -m py_compile server/app.py server/sudo_ops.py server/tplink_collector.p
 
 The deployed Pi4 copy lives at `/opt/pi4-noc` and runs as `pi4-noc.service` on `http://192.168.0.101/`.
 
-Observed/controlled services include AdGuard Home, k3s, Uptime Kuma, Esty, Samba, SSH, and the Podman socket. Esty is managed by `container-esty.service` and listens on port `8095`.
+Observed/controlled services include AdGuard Home, k3s, Samba, SSH, and the k3s-hosted Uptime Kuma and GRID deployments (`homelab` namespace, exposed via hostPorts).
 
 ```bash
 npm run build
@@ -31,12 +31,12 @@ Once Tailscale is connected on an approved device, use the normal LAN URL:
 http://192.168.0.101/
 ```
 
-The same subnet route keeps the dashboard's Web Apps links usable remotely, including AdGuard `:8080`, Uptime Kuma `:3001`, Coinbot-Mission-Control `:8088`, GRID `:8090`, and Esty `:8095`.
+The same subnet route keeps the dashboard's Web Apps links usable remotely, including AdGuard `:8080`, Uptime Kuma `:3001`, and GRID `:8090` / `:7777`.
 
 ## Validation Notes
 
 - Backend syntax smoke: `python3 -m py_compile server/app.py server/sudo_ops.py server/tplink_collector.py`.
 - Frontend build smoke: `npm run build`.
-- Live Esty validation should confirm `systemctl is-active container-esty.service`, port `8095` is listening, and the Web Apps panel opens `http://192.168.0.101:8095/`.
+- Live validation: `systemctl is-active pi4-noc.service`, the Web Apps panel shows every link `online`, and the GRID/Uptime Kuma service rows report `1/1 ready`.
 
 See `MEMORY.md` for project memory, live service notes, and gotchas.

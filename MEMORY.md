@@ -1,8 +1,19 @@
 # Cabrera Network Memory
 
+## 2026-06-09 Probe-Based Status, Speed + Mobile Pass
+
+- Web app status is now TCP-probe-based (`probe_ports` in `server/app.py`), not `ss` LISTEN-set membership. GRID and Uptime Kuma moved to k3s with `hostPort` exposure, which uses iptables DNAT and never creates LISTEN sockets — the old check showed them "not listening" while they worked. Labels are now `online`/`offline`.
+- Uptime Kuma and GRID appear in Services as k3s-backed rows (`kind: "k3s"` in `UNIT_CONFIG`, status from cached K3S workload ready/desired). Restart maps to `kubectl rollout restart`; logs use the new `k3s-workload` source in `/api/logs` (allowlisted via `ALLOWED_WORKLOAD_LOGS`). `container-uptime-kuma.service` is retired.
+- Geist/Geist Mono are self-hosted (`src/fonts/*.woff2`, latin variable subsets, @font-face in `styles.css`); no Google Fonts requests.
+- `npm run build` precompresses dist via `scripts/precompress.mjs`; Flask serves `.gz` siblings (`send_dist`), gzips JSON >1KB, and sends immutable cache headers for `/assets/`. Flask's built-in static handler is disabled (`static_folder=None`) — don't re-enable it or assets bypass compression/caching.
+- `/api/events` SSE ticks every 2s and skips unchanged payloads (keepalive comments instead).
+- `overflow-x` on html/body must stay `clip`, never `hidden` — `hidden` makes body a scroll container and silently breaks the sticky `.topbar`/`.mobile-header`.
+- `index.html` carries `viewport-fit=cover` + apple-mobile-web-app meta; safe-area insets are applied in the mobile/tablet media queries. The aurora animation is held still on ≤820px for battery.
+- Local dev: `vite.config.js` proxies `/api` to the live Pi (`PI4_NOC_API` overrides the target).
+
 ## 2026-05-16 Repository Setup
 
-- Canonical Mac source now lives at `/Users/christophercabrera/Desktop/repos/CabreraNetwork`.
+- Canonical Mac source now lives at `/Users/christophercabrera/Desktop/GitlabRepos/CabreraNetwork`.
 - Original working source was copied from `/Users/christophercabrera/Desktop/Sandbox/RaspberryPi4/Rp4`.
 - GitHub remote is `git@github.com:Zoneofsavi2814/CabreraNetwork.git`.
 - Initial working branch for the imported dashboard is `initial`.
@@ -30,15 +41,9 @@
   - Cabrera Network: `http://192.168.0.101/`
   - AdGuard Home: `http://192.168.0.101:8080/`
   - Uptime Kuma: `http://192.168.0.101:3001/`
-  - Coinbot-Mission-Control: `http://192.168.0.101:8088/`
   - GRID Wiki: `http://192.168.0.101:8090/`
   - GRID protected listener/API: `http://192.168.0.101:7777/`
-  - Esty: `http://192.168.0.101:8095/`
-- Rootful Podman workloads shown in the GUI are app containers only. Podman infra/pause containers are hidden because they are implementation details of pods.
-- `localhost/podman-pause:4.3.1-0` is Podman’s required pod infra image; do not delete it while the pod exists.
-- Coinbot and Mission Control run in rootful Podman pod `cabrera-mission-control`.
-- The Mission Control container is named `Coinbot-Mission-Control`; Coinbot container is named `coinbot`.
-- Esty is managed as `container-esty.service`, publishes port `8095`, and should appear in Services, Containers, and Web Apps when discovered live. Mock fallback data includes the same service/container/web-app entries.
+- All Podman-era workloads are decommissioned and must not reappear in the dashboard (web apps, services, or mock data). Podman containers are no longer collected or shown — app workloads run in k3s.
 
 ## Deployment And Validation
 
@@ -50,22 +55,18 @@
   - `systemctl is-active pi4-noc.service`
   - unauthenticated `/api/snapshot` and `/api/events` return `401`
   - `/api/session` returns `200` with `authenticated: false` before login
-  - the Web Apps panel lists the current LAN links
-  - the Podman list hides infra/pause containers and shows `Coinbot-Mission-Control`
-  - Esty shows as `container-esty.service`, has port `8095` listening, and opens `http://192.168.0.101:8095/`
+  - the Web Apps panel lists the current LAN links with `online` status pills
 
 ## Remote Access
 
 - Remote access is private through Tailscale; do not add router port forwarding for the dashboard.
 - Pi4 is configured as the subnet router for `192.168.0.0/24`, so approved tailnet devices can use the normal LAN URL `http://192.168.0.101/` away from home.
-- The full subnet route keeps existing Web Apps links usable remotely: AdGuard `:8080`, Uptime Kuma `:3001`, Coinbot-Mission-Control `:8088`, GRID `:8090`, and Esty `:8095`.
+- The full subnet route keeps existing Web Apps links usable remotely: AdGuard `:8080`, Uptime Kuma `:3001`, and GRID `:8090` / `:7777`.
 - Linux clients may need `sudo tailscale set --accept-routes`; macOS, iOS, Windows, and Android normally pick up approved subnet routes automatically.
 
 ## Related Systems
 
 - AdGuard Home is active on DNS port `53` and admin UI port `8080`.
-- Uptime Kuma is managed by `container-uptime-kuma.service` and listens on port `3001`.
-- Esty is managed by `container-esty.service` and listens on port `8095`.
-- GRID is managed by `grid.service`, publishing `8090:8080` and `7777:7777`.
-- k3s, Samba, SSH, AdGuard, Podman, Uptime Kuma, and Esty are intentionally observed/controlled through fixed allowlists only.
-- Coinbot and Mission Control were removed from the RP5 on 2026-05-16 after Pi4 health validation passed.
+- Uptime Kuma runs as k3s deployment `homelab/uptime-kuma` with hostPort `3001` (the old `container-uptime-kuma.service` is retired).
+- GRID runs as k3s deployment `homelab/grid` with hostPorts `8090` (wiki) and `7777` (protected listener/API); `grid.service` is retired.
+- k3s, Samba, SSH, AdGuard, Uptime Kuma, and GRID are intentionally observed/controlled through fixed allowlists only.
