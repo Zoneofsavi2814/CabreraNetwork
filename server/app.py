@@ -20,7 +20,7 @@ import threading
 import time
 import uuid
 from collections import Counter, deque
-from datetime import datetime
+from datetime import datetime, timedelta
 from pathlib import Path
 from urllib import error as urlerror
 from urllib import request as urlrequest
@@ -38,8 +38,11 @@ DIST_DIR = Path(os.environ.get("PI4_NOC_DIST", APP_ROOT / "dist"))
 SUDO_HELPER = Path(os.environ.get("PI4_NOC_SUDO_HELPER", APP_ROOT / "server" / "sudo_ops.py"))
 ADGUARD_CREDS = Path(os.environ.get("PI4_NOC_ADGUARD_CREDS", "/home/pi4/.adguard-home-admin"))
 LAN_IP = os.environ.get("PI4_NOC_LAN_IP", "192.168.0.101")
+PI5_IP = os.environ.get("PI4_NOC_PI5_IP", "192.168.0.94")
 ROUTER_IP = os.environ.get("PI4_NOC_ROUTER_IP", "192.168.0.1")
 ROUTER_NAME = os.environ.get("PI4_NOC_ROUTER_NAME", "TP-Link Archer BE400")
+SPEED_TEST_URL = os.environ.get("PI4_NOC_SPEED_TEST_URL", "https://speed.cloudflare.com/__down?bytes=1000000")
+SPEED_WARN_MBPS = float(os.environ.get("PI4_NOC_SPEED_WARN_MBPS", "10"))
 ROUTER_CREDS_FILE = Path(os.environ.get("PI4_NOC_ROUTER_CREDS", "/home/pi4/.pi4-noc-router-admin"))
 ROUTER_TOPOLOGY_FILE = Path(os.environ.get("PI4_NOC_ROUTER_TOPOLOGY", "/home/pi4/.pi4-noc-router-topology.json"))
 DEVICE_ALIASES_FILE = Path(os.environ.get("PI4_NOC_DEVICE_ALIASES", "/home/pi4/.pi4-noc-device-aliases.json"))
@@ -53,14 +56,14 @@ DEFAULT_APS = [
     {
         "id": "basement",
         "name": "ArcherAX3000Pro_Basement",
-        "ip": "192.168.0.117",
+        "ip": "192.168.0.118",
         "mac": "98:03:8e:65:a4:ec",
         "location": "Basement",
     },
     {
         "id": "loft",
         "name": "ArcherAX3000Pro_Loft",
-        "ip": "192.168.0.176",
+        "ip": "192.168.0.216",
         "mac": "98:03:8e:44:f7:e4",
         "location": "Loft",
     },
@@ -87,6 +90,54 @@ WEB_APP_CONFIG = [
     {"id": "grid-wiki", "label": "GRID Wiki", "url": f"http://{LAN_IP}:8090/", "port": "8090", "glyph": "globe", "kind": "knowledge"},
     {"id": "grid-api", "label": "GRID protected listener/API", "url": f"http://{LAN_IP}:7777/", "port": "7777", "glyph": "brandSocket", "kind": "api"},
 ]
+
+OPS_CADENCE_CONFIG = [
+    {"id": "five-minute", "label": "Every 5 minutes", "intervalSeconds": 300, "glyph": "activity"},
+    {"id": "hourly", "label": "Every hour", "intervalSeconds": 3600, "glyph": "clock"},
+    {"id": "morning", "label": "Every morning", "intervalSeconds": 86400, "scheduleTime": "07:00", "glyph": "bell"},
+    {"id": "nightly", "label": "Every night", "intervalSeconds": 86400, "scheduleTime": "23:55", "glyph": "moon"},
+]
+
+OPS_CHECK_CONFIG = {
+    "five-minute": [
+        {"id": "gateway", "label": "Gateway reachability", "host": "Router", "kind": "ping", "target": ROUTER_IP, "failureStatus": "fail"},
+        {"id": "dns-resolver", "label": "DNS resolver", "host": "Pi4", "kind": "dns", "target": "example.com", "failureStatus": "fail"},
+        {"id": "wan-http", "label": "WAN HTTPS reachability", "host": "Internet", "kind": "http", "url": "https://one.one.one.one/cdn-cgi/trace", "timeout": 2.5, "failureStatus": "warn"},
+        {"id": "pi4-noc", "label": "Cabrera Network", "host": "Pi4", "kind": "http", "url": f"http://{LAN_IP}/api/session", "expectJson": True, "failureStatus": "warn"},
+        {"id": "grid-web", "label": "GRID web/API", "host": "Pi4 k3s", "kind": "http", "url": f"http://{LAN_IP}:8090/healthz", "jsonField": "ok", "jsonEquals": True, "failureStatus": "fail"},
+        {"id": "grid-mcp", "label": "GRID MCP", "host": "Pi4 k3s", "kind": "http", "url": f"http://{LAN_IP}:7777/healthz", "jsonField": "ok", "jsonEquals": True, "failureStatus": "fail"},
+        {"id": "uptime-kuma", "label": "Uptime Kuma", "host": "Pi4 k3s", "kind": "http", "url": f"http://{LAN_IP}:3001/", "failureStatus": "warn"},
+        {"id": "coinbot", "label": "Coinbot API", "host": "Pi5 k3s", "kind": "http", "url": f"http://{PI5_IP}:8787/health", "jsonField": "status", "jsonEquals": "ok", "warnJsonField": "degraded", "failureStatus": "fail"},
+        {"id": "mission-control", "label": "Mission Control", "host": "Pi5 k3s", "kind": "http", "url": f"http://{PI5_IP}:8088/api/health", "jsonField": "status", "jsonEquals": "ok", "failureStatus": "fail"},
+        {"id": "eagleeye", "label": "EagleEye", "host": "Pi5 k3s", "kind": "http", "url": f"http://{PI5_IP}:8098/healthz", "jsonField": "status", "jsonEquals": "ok", "failureStatus": "warn"},
+        {"id": "programs", "label": "CabreraPrograms", "host": "Pi5", "kind": "http", "url": f"http://{PI5_IP}:8096/api/session", "expectJson": True, "failureStatus": "warn"},
+        {"id": "portfolio-api", "label": "Portfolio API", "host": "Pi5", "kind": "http", "url": f"http://{PI5_IP}:8099/api/health", "jsonField": "ok", "jsonEquals": True, "failureStatus": "fail"},
+    ],
+    "hourly": [
+        {"id": "wan-speed", "label": "WAN speed sample", "host": "Internet", "kind": "speed-lite", "url": SPEED_TEST_URL, "timeout": 4, "minMbps": SPEED_WARN_MBPS, "failureStatus": "warn"},
+        {"id": "k3s-release", "label": "k3s latest release", "host": "GitHub", "kind": "github-release", "repo": "k3s-io/k3s", "failureStatus": "warn"},
+        {"id": "hourly-backups", "label": "Backup freshness", "host": "Pi4", "kind": "backup-recent", "path": "/mnt/ssd/backups", "maxAgeHours": 72, "failureStatus": "warn"},
+        {"id": "pi4-k3s-node", "label": "Pi4 k3s node", "host": "Pi4 k3s", "kind": "k3s-local", "scope": "nodes", "failureStatus": "fail"},
+        {"id": "pi4-k3s-apps", "label": "Pi4 k3s apps", "host": "Pi4 k3s", "kind": "k3s-local", "scope": "workloads", "workloads": ["grid", "uptime-kuma", "local-registry", "homelab-smoke"], "failureStatus": "warn"},
+        {"id": "grid-index", "label": "GRID index", "host": "Pi4 k3s", "kind": "http", "url": f"http://{LAN_IP}:8090/api/stats", "jsonField": "schema_version", "jsonEquals": 3, "failureStatus": "warn"},
+        {"id": "local-registry", "label": "Local registry", "host": "Pi4 k3s", "kind": "http", "url": f"http://{LAN_IP}:5000/v2/", "failureStatus": "warn"},
+        {"id": "portfolio-web", "label": "Portfolio web", "host": "Pi5", "kind": "http", "url": f"http://{PI5_IP}:8080/", "failureStatus": "fail"},
+    ],
+    "morning": [
+        {"id": "brief", "label": "Morning service brief", "host": "Ops Center", "kind": "operations-brief", "failureStatus": "warn"},
+    ],
+    "nightly": [
+        {"id": "logrotate-timer", "label": "Log rotation timer", "host": "Pi4", "kind": "systemd-timer", "unit": "logrotate.timer", "failureStatus": "warn"},
+        {"id": "log2ram-flush", "label": "log2ram daily flush", "host": "Pi4", "kind": "systemd-timer", "unit": "log2ram-daily.timer", "failureStatus": "warn"},
+        {"id": "tmpfiles-clean", "label": "Temp/log cleanup timer", "host": "Pi4", "kind": "systemd-timer", "unit": "systemd-tmpfiles-clean.timer", "failureStatus": "warn"},
+        {"id": "dpkg-backup", "label": "Package DB backup timer", "host": "Pi4", "kind": "systemd-timer", "unit": "dpkg-db-backup.timer", "failureStatus": "warn"},
+        {"id": "ssd-trim", "label": "SSD trim timer", "host": "Pi4", "kind": "systemd-timer", "unit": "fstrim.timer", "failureStatus": "warn"},
+        {"id": "root-disk", "label": "Root disk headroom", "host": "Pi4", "kind": "disk", "path": "/", "maxPct": 85, "failureStatus": "warn"},
+        {"id": "ssd-disk", "label": "SSD headroom", "host": "Pi4", "kind": "disk", "path": "/mnt/ssd", "maxPct": 85, "failureStatus": "warn"},
+        {"id": "brain-mount", "label": "GRID brain mount", "host": "Pi4", "kind": "mount", "path": "/mnt/nas/brain", "failureStatus": "fail"},
+        {"id": "brain-freshness", "label": "GRID brain freshness", "host": "Pi4", "kind": "path-freshness", "path": "/mnt/nas/brain", "maxAgeHours": 168, "recursive": True, "failureStatus": "warn"},
+    ],
+}
 
 ALLOWED_UNITS = {row["unit"] for row in UNIT_CONFIG if "unit" in row}
 ALLOWED_WORKLOAD_LOGS = {(row["namespace"], row["workloadKind"], row["workload"]) for row in UNIT_CONFIG if row.get("kind") == "k3s"}
@@ -224,6 +275,115 @@ def status_tone(status: str) -> str:
     if status in {"exited", "inactive", "pending", "unknown"}:
         return "warn"
     return "fail"
+
+
+def iso_from_ts(ts: float | None = None) -> str:
+    return datetime.fromtimestamp(ts if ts is not None else time.time()).isoformat()
+
+
+def parse_schedule_time(value: str) -> tuple[int, int]:
+    hour_text, minute_text = value.split(":", 1)
+    hour = int(hour_text)
+    minute = int(minute_text)
+    if hour < 0 or hour > 23 or minute < 0 or minute > 59:
+        raise ValueError(f"invalid schedule time {value}")
+    return hour, minute
+
+
+def scheduled_daily_ts(value: str, base_ts: float, *, previous: bool = False) -> float:
+    hour, minute = parse_schedule_time(value)
+    base = datetime.fromtimestamp(base_ts)
+    scheduled = base.replace(hour=hour, minute=minute, second=0, microsecond=0)
+    if previous:
+        if scheduled > base:
+            scheduled -= timedelta(days=1)
+    elif scheduled <= base:
+        scheduled += timedelta(days=1)
+    return scheduled.timestamp()
+
+
+def next_operation_run_ts(cfg: dict, now: float) -> float:
+    if cfg.get("scheduleTime"):
+        return scheduled_daily_ts(cfg["scheduleTime"], now)
+    return now + float(cfg["intervalSeconds"])
+
+
+def operation_cadence_due(cfg: dict, last_run: float | None, now: float, force: bool = False) -> bool:
+    if force:
+        return True
+    if cfg.get("scheduleTime"):
+        latest_scheduled = scheduled_daily_ts(cfg["scheduleTime"], now, previous=True)
+        return last_run is None or last_run < latest_scheduled <= now
+    return last_run is None or now - last_run >= float(cfg["intervalSeconds"])
+
+
+def nested_get(data, dotted: str, default=None):
+    cur = data
+    for part in dotted.split("."):
+        if not isinstance(cur, dict) or part not in cur:
+            return default
+        cur = cur[part]
+    return cur
+
+
+def ops_status_counts(cadences: list[dict]) -> dict[str, int]:
+    counts = {"ok": 0, "warn": 0, "fail": 0}
+    for cadence in cadences:
+        for check in cadence.get("checks", []) or []:
+            status = check.get("status", "warn")
+            if status in counts:
+                counts[status] += 1
+            else:
+                counts["warn"] += 1
+    return counts
+
+
+def ops_rollup_status(counts: dict[str, int]) -> str:
+    if counts.get("fail", 0):
+        return "fail"
+    if counts.get("warn", 0):
+        return "warn"
+    return "ok"
+
+
+def summarize_operations(cadences: list[dict]) -> dict:
+    counts = ops_status_counts(cadences)
+    total = sum(counts.values())
+    status = ops_rollup_status(counts)
+    due_times = [
+        cadence.get("nextRunAt")
+        for cadence in cadences
+        if cadence.get("nextRunAt")
+    ]
+    return {
+        "status": status,
+        "ok": counts["ok"],
+        "warn": counts["warn"],
+        "fail": counts["fail"],
+        "total": total,
+        "message": "All watched services are healthy" if status == "ok" else f"{counts['fail']} failed · {counts['warn']} warning",
+        "nextRunAt": min(due_times) if due_times else None,
+    }
+
+
+def operation_check_result(check: dict, status: str, message: str, started: float, **extra) -> dict:
+    result = {
+        "id": check["id"],
+        "label": check["label"],
+        "host": check.get("host", ""),
+        "kind": check.get("kind", ""),
+        "status": status,
+        "message": redact(message),
+        "latencyMs": max(0, round((time.monotonic() - started) * 1000)),
+    }
+    if check.get("url"):
+        result["href"] = check["url"]
+    if check.get("target"):
+        result["target"] = check["target"]
+    if check.get("path"):
+        result["target"] = check["path"]
+    result.update(extra)
+    return result
 
 
 def safe_float(value, default: float = 0.0) -> float:
@@ -668,6 +828,7 @@ class DashboardCache:
         self.prev_adguard = None
         self.adguard_client_hints: dict[str, dict] = {}
         self.name_cache: dict[str, dict] = {}
+        self.operations_last_run: dict[str, float] = {}
         self.router_topology_doc: dict = {}
         self.router_collector_status: dict = self.empty_router_collector_status("not_polled", "Router collector has not polled yet")
         self.router_collector = TplinkTopologyCollector(
@@ -721,6 +882,7 @@ class DashboardCache:
             },
             "LOGS": [],
             "WEB_APPS": self.web_apps_snapshot({}),
+            "OPS_CENTER": self.empty_operations_snapshot(),
             "HOST": {},
             "META": {"updatedAt": datetime.now().isoformat(), "source": "pi4-noc-sidecar"},
         }
@@ -736,6 +898,7 @@ class DashboardCache:
         self.update_services()
         self.update_adguard()
         self.update_k3s()
+        self.update_operations(force=True)
         self.update_router_collector()
         self.update_topology()
 
@@ -748,6 +911,7 @@ class DashboardCache:
         while True:
             time.sleep(interval)
             self.update_services()
+            self.update_operations()
             self.update_topology()
 
     def _heavy_loop(self, interval: int) -> None:
@@ -969,6 +1133,278 @@ class DashboardCache:
                 }
             )
         return apps
+
+    def empty_operations_snapshot(self) -> dict:
+        now = time.time()
+        return {
+            "schemaVersion": 1,
+            "updatedAt": iso_from_ts(now),
+            "summary": {"status": "unknown", "ok": 0, "warn": 0, "fail": 0, "total": 0, "message": "Operations checks have not run yet", "nextRunAt": None},
+            "cadences": [
+                {
+                    **cfg,
+                    "status": "unknown",
+                    "lastRunAt": None,
+                    "nextRunAt": iso_from_ts(next_operation_run_ts(cfg, now)),
+                    "durationMs": 0,
+                    "checks": [],
+                }
+                for cfg in OPS_CADENCE_CONFIG
+            ],
+            "events": [],
+        }
+
+    def update_operations(self, force: bool = False) -> None:
+        now = time.time()
+        with self.lock:
+            current = copy.deepcopy(self.snapshot_data.get("OPS_CENTER") or self.empty_operations_snapshot())
+        cadences_by_id = {cadence["id"]: cadence for cadence in current.get("cadences", [])}
+
+        due_configs = []
+        for cfg in OPS_CADENCE_CONFIG:
+            last = self.operations_last_run.get(cfg["id"])
+            if operation_cadence_due(cfg, last, now, force=force):
+                due_configs.append(cfg)
+
+        if not due_configs:
+            return
+
+        for cfg in due_configs:
+            started = time.monotonic()
+            checks = self.run_operations_cadence(cfg)
+            self.operations_last_run[cfg["id"]] = now
+            counts = ops_status_counts([{"checks": checks}])
+            status = ops_rollup_status(counts)
+            cadences_by_id[cfg["id"]] = {
+                **cfg,
+                "status": status,
+                "lastRunAt": iso_from_ts(now),
+                "nextRunAt": iso_from_ts(next_operation_run_ts(cfg, now)),
+                "durationMs": round((time.monotonic() - started) * 1000),
+                "checks": checks,
+            }
+
+        cadences = [cadences_by_id.get(cfg["id"], {**cfg, "status": "unknown", "checks": []}) for cfg in OPS_CADENCE_CONFIG]
+        summary = summarize_operations(cadences)
+        events = self.operation_events(cadences)
+        with self.lock:
+            self.snapshot_data["OPS_CENTER"] = {
+                "schemaVersion": 1,
+                "updatedAt": iso_from_ts(),
+                "summary": summary,
+                "cadences": cadences,
+                "events": events,
+            }
+
+    def run_operations_cadence(self, cfg: dict) -> list[dict]:
+        checks = OPS_CHECK_CONFIG.get(cfg["id"], [])
+        results: list[dict | None] = [None] * len(checks)
+        threads = []
+        for index, check in enumerate(checks):
+            thread = threading.Thread(target=lambda i=index, c=check: results.__setitem__(i, self.run_operation_check(c)), daemon=True)
+            thread.start()
+            threads.append(thread)
+        for thread in threads:
+            thread.join(timeout=5)
+        return [
+            result if result is not None else operation_check_result(checks[index], "warn", "check timed out", time.monotonic())
+            for index, result in enumerate(results)
+        ]
+
+    def run_operation_check(self, check: dict) -> dict:
+        kind = check.get("kind")
+        started = time.monotonic()
+        try:
+            if kind == "http":
+                return self.http_operation_check(check, started)
+            if kind == "ping":
+                return self.ping_operation_check(check, started)
+            if kind == "dns":
+                return self.dns_operation_check(check, started)
+            if kind == "k3s-local":
+                return self.k3s_operation_check(check, started)
+            if kind == "disk":
+                return self.disk_operation_check(check, started)
+            if kind == "mount":
+                return self.mount_operation_check(check, started)
+            if kind == "systemd-timer":
+                return self.timer_operation_check(check, started)
+            if kind == "backup-recent":
+                return self.backup_operation_check(check, started)
+            if kind == "path-freshness":
+                return self.path_freshness_operation_check(check, started)
+            if kind == "operations-brief":
+                return self.brief_operation_check(check, started)
+            if kind == "speed-lite":
+                return self.speed_operation_check(check, started)
+            if kind == "github-release":
+                return self.github_release_operation_check(check, started)
+            return operation_check_result(check, "warn", f"unsupported check kind {kind}", started)
+        except Exception as exc:
+            return operation_check_result(check, check.get("failureStatus", "fail"), str(exc), started)
+
+    def http_operation_check(self, check: dict, started: float) -> dict:
+        req = urlrequest.Request(check["url"], headers={"User-Agent": "pi4-noc-ops/1.0"})
+        status = check.get("failureStatus", "fail")
+        with urlrequest.urlopen(req, timeout=float(check.get("timeout", 2.5))) as resp:
+            body = resp.read(int(check.get("maxBodyBytes", 262144))).decode("utf-8", "replace")
+            code = getattr(resp, "status", resp.getcode())
+            ok_codes = check.get("okStatuses") or list(range(200, 400))
+            ok = int(code) in ok_codes
+            data = {}
+            if body.strip().startswith(("{", "[")) or check.get("expectJson") or check.get("jsonField"):
+                try:
+                    data = json.loads(body or "{}")
+                except Exception:
+                    data = {}
+                    ok = False
+            message = f"HTTP {code}"
+            if check.get("jsonField"):
+                actual = nested_get(data, check["jsonField"])
+                expected = check.get("jsonEquals", True)
+                ok = ok and actual == expected
+                message = f"{check['jsonField']}={actual!r}"
+            warn_field = check.get("warnJsonField")
+            if ok and warn_field and nested_get(data, warn_field):
+                return operation_check_result(check, "warn", f"{warn_field}=true", started, httpStatus=code)
+            return operation_check_result(check, "ok" if ok else status, message, started, httpStatus=code)
+
+    def ping_operation_check(self, check: dict, started: float) -> dict:
+        proc = run_cmd(["/bin/ping", "-c", "1", "-W", "2", check["target"]], timeout=3)
+        status = "ok" if proc.returncode == 0 else check.get("failureStatus", "fail")
+        message = "reachable" if proc.returncode == 0 else (proc.stdout.strip().splitlines()[-1] if proc.stdout.strip() else "ping failed")
+        return operation_check_result(check, status, message, started)
+
+    def dns_operation_check(self, check: dict, started: float) -> dict:
+        target = check.get("target", "example.com")
+        ip = socket.gethostbyname(target)
+        return operation_check_result(check, "ok", f"{target} -> {ip}", started)
+
+    def k3s_operation_check(self, check: dict, started: float) -> dict:
+        with self.lock:
+            k3s = copy.deepcopy(self.snapshot_data.get("K3S", {}))
+        if check.get("scope") == "nodes":
+            nodes = k3s.get("nodes", [])
+            ready = [node for node in nodes if node.get("ready")]
+            ok = bool(nodes) and len(ready) == len(nodes)
+            return operation_check_result(check, "ok" if ok else check.get("failureStatus", "fail"), f"{len(ready)}/{len(nodes)} nodes ready", started)
+        targets = set(check.get("workloads", []))
+        workloads = [
+            workload for workload in k3s.get("workloads", [])
+            if not targets or workload.get("name") in targets
+        ]
+        degraded = [
+            workload for workload in workloads
+            if int(workload.get("ready") or 0) < int(workload.get("desired") or 1)
+        ]
+        ok = bool(workloads) and not degraded
+        message = f"{len(workloads) - len(degraded)}/{len(workloads)} workloads ready" if workloads else "awaiting workload data"
+        return operation_check_result(check, "ok" if ok else check.get("failureStatus", "warn"), message, started)
+
+    def disk_operation_check(self, check: dict, started: float) -> dict:
+        path = Path(check["path"])
+        if not path.exists():
+            return operation_check_result(check, check.get("failureStatus", "warn"), "path is missing", started)
+        usage = psutil.disk_usage(str(path))
+        max_pct = float(check.get("maxPct", 85))
+        status = "ok" if usage.percent < max_pct else check.get("failureStatus", "warn")
+        return operation_check_result(check, status, f"{usage.percent:.1f}% used", started, usedPct=round(usage.percent, 1))
+
+    def mount_operation_check(self, check: dict, started: float) -> dict:
+        proc = run_cmd(["/usr/bin/findmnt", check["path"]], timeout=3)
+        status = "ok" if proc.returncode == 0 else check.get("failureStatus", "fail")
+        return operation_check_result(check, status, "mounted" if proc.returncode == 0 else "mount not found", started)
+
+    def timer_operation_check(self, check: dict, started: float) -> dict:
+        unit = check["unit"]
+        proc = run_cmd(["/bin/systemctl", "is-active", unit], timeout=3)
+        state = proc.stdout.strip() or proc.stderr.strip() or "unknown"
+        status = "ok" if proc.returncode == 0 and state == "active" else check.get("failureStatus", "warn")
+        return operation_check_result(check, status, state, started, unit=unit)
+
+    def backup_operation_check(self, check: dict, started: float) -> dict:
+        path = Path(check["path"])
+        if not path.exists():
+            return operation_check_result(check, check.get("failureStatus", "warn"), "backup path is missing", started)
+        max_age = float(check.get("maxAgeHours", 72)) * 3600
+        newest = max((item.stat().st_mtime for item in path.iterdir()), default=0)
+        age_hours = (time.time() - newest) / 3600 if newest else None
+        ok = newest > 0 and time.time() - newest <= max_age
+        message = f"newest {age_hours:.1f}h ago" if age_hours is not None else "no backups found"
+        return operation_check_result(check, "ok" if ok else check.get("failureStatus", "warn"), message, started)
+
+    def path_freshness_operation_check(self, check: dict, started: float) -> dict:
+        path = Path(check["path"])
+        if not path.exists():
+            return operation_check_result(check, check.get("failureStatus", "warn"), "path is missing", started)
+        max_age = float(check.get("maxAgeHours", 168)) * 3600
+        source = path.rglob("*") if check.get("recursive") else path.iterdir()
+        newest = max((item.stat().st_mtime for item in source if item.is_file()), default=path.stat().st_mtime)
+        age_hours = (time.time() - newest) / 3600
+        ok = time.time() - newest <= max_age
+        return operation_check_result(check, "ok" if ok else check.get("failureStatus", "warn"), f"newest {age_hours:.1f}h ago", started)
+
+    def brief_operation_check(self, check: dict, started: float) -> dict:
+        with self.lock:
+            current = copy.deepcopy(self.snapshot_data.get("OPS_CENTER") or {})
+        cadences = []
+        for cadence in current.get("cadences", []) or []:
+            checks = [
+                item for item in cadence.get("checks", []) or []
+                if item.get("kind") != "operations-brief" and item.get("id") != check.get("id")
+            ]
+            cadences.append({"checks": checks})
+        counts = ops_status_counts(cadences)
+        total = sum(counts.values())
+        if counts["fail"]:
+            message = f"brief generated: {counts['fail']} failures and {counts['warn']} warnings in current checks"
+        elif counts["warn"]:
+            message = f"brief generated: {counts['warn']} warnings in current checks"
+        elif total:
+            message = f"brief generated: no unusual service issues across {total} checks"
+        else:
+            message = "brief generated: awaiting check history"
+        return operation_check_result(check, "ok", message, started)
+
+    def speed_operation_check(self, check: dict, started: float) -> dict:
+        req = urlrequest.Request(check["url"], headers={"User-Agent": "pi4-noc-speed/1.0"})
+        with urlrequest.urlopen(req, timeout=float(check.get("timeout", 4))) as resp:
+            body = resp.read(int(check.get("maxBytes", 1000000)))
+        elapsed = max(time.monotonic() - started, 0.001)
+        mbps = (len(body) * 8) / elapsed / 1_000_000
+        min_mbps = float(check.get("minMbps", 10))
+        status = "ok" if mbps >= min_mbps else check.get("failureStatus", "warn")
+        return operation_check_result(check, status, f"{mbps:.1f} Mbps sample", started, mbps=round(mbps, 1))
+
+    def github_release_operation_check(self, check: dict, started: float) -> dict:
+        repo = check["repo"]
+        url = f"https://api.github.com/repos/{repo}/releases/latest"
+        req = urlrequest.Request(
+            url,
+            headers={
+                "Accept": "application/vnd.github+json",
+                "User-Agent": "pi4-noc-ops/1.0",
+            },
+        )
+        with urlrequest.urlopen(req, timeout=float(check.get("timeout", 5))) as resp:
+            data = json.loads(resp.read(int(check.get("maxBodyBytes", 65536))).decode("utf-8", "replace") or "{}")
+        tag = data.get("tag_name") or data.get("name") or "unknown"
+        return operation_check_result(check, "ok", f"latest {tag}", started, href=f"https://github.com/{repo}/releases/latest", release=tag)
+
+    def operation_events(self, cadences: list[dict]) -> list[dict]:
+        events = []
+        for cadence in cadences:
+            for check in cadence.get("checks", []) or []:
+                if check.get("status") in {"warn", "fail"}:
+                    events.append(
+                        {
+                            "t": datetime.now().strftime("%H:%M:%S"),
+                            "tone": check.get("status"),
+                            "source": check.get("host") or cadence.get("label"),
+                            "msg": f"{check.get('label')}: {check.get('message')}",
+                        }
+                    )
+        return events[:8]
 
     def recent_log_cards(self) -> list[dict]:
         cards = []

@@ -32,6 +32,13 @@ const useNow = () => {
 const fmtTime = (d) =>
   `${String(d.getHours()).padStart(2,"0")}:${String(d.getMinutes()).padStart(2,"0")}:${String(d.getSeconds()).padStart(2,"0")}`;
 
+const fmtClock = (value) => {
+  if (!value) return "not run";
+  const d = new Date(value);
+  if (Number.isNaN(d.getTime())) return String(value);
+  return d.toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" });
+};
+
 const asNumber = (value, fallback = 0) => {
   const next = Number(value);
   return Number.isFinite(next) ? next : fallback;
@@ -1795,7 +1802,106 @@ const LogsModal = ({ view, onClose }) => {
 };
 
 // ------------------------------------------------------------- Ops panel
-const OpsPanel = ({ onAction, onLogs, jobs }) => {
+const OpsStatusIcon = ({ status }) => {
+  if (status === "ok") return <Icon name="check" />;
+  if (status === "fail") return <Icon name="alert" />;
+  if (status === "warn") return <Icon name="alert" />;
+  return <Icon name="dashed" />;
+};
+
+const opsCheckRank = (status) => {
+  if (status === "fail") return 0;
+  if (status === "warn") return 1;
+  if (status === "ok") return 3;
+  return 2;
+};
+
+const prioritizeOpsChecks = (checks = []) =>
+  [...checks].sort((a, b) => opsCheckRank(a.status) - opsCheckRank(b.status));
+
+const OpsCenter = ({ operations }) => {
+  const summary = operations?.summary || {};
+  const cadences = operations?.cadences || [];
+  const events = operations?.events || [];
+  const tone = summary.status || "muted";
+  return (
+    <div className="ops-center">
+      <div className="ops-center-summary">
+        <div className="ops-center-title">
+          <span className={`chip ${tone}`}><OpsStatusIcon status={tone} /></span>
+          <div>
+            <div style={{ fontSize: 13, fontWeight: 500 }}>Personal Operations Center</div>
+            <div className="mono" style={{ fontSize: 10, color: "var(--slate-2)" }}>{summary.message || "waiting for checks"}</div>
+          </div>
+        </div>
+        <div className="ops-counts">
+          <span className="pill ok">{summary.ok || 0} ok</span>
+          <span className="pill warn">{summary.warn || 0} warn</span>
+          <span className="pill fail">{summary.fail || 0} fail</span>
+          <span className="pill cyan"><Icon name="clock" size={11} />next {fmtClock(summary.nextRunAt)}</span>
+        </div>
+      </div>
+
+      <div className="ops-cadence-grid">
+        {cadences.map((cadence) => {
+          const checks = cadence.checks || [];
+          const visibleChecks = prioritizeOpsChecks(checks).slice(0, 5);
+          return (
+            <div key={cadence.id} className={`ops-cadence ${cadence.status || "muted"}`}>
+              <div className="ops-cadence-head">
+                <div className="ops-cadence-label">
+                  <span className={`dot ${cadence.status || "muted"}`} />
+                  <span>{cadence.label}</span>
+                </div>
+                <span className={`pill ${cadence.status || "muted"}`}>{cadence.status || "unknown"}</span>
+              </div>
+              <div className="ops-cadence-meta mono">
+                last {fmtClock(cadence.lastRunAt)} · next {fmtClock(cadence.nextRunAt)}
+              </div>
+              <div className="ops-check-list">
+                {visibleChecks.map((check) => (
+                  <a
+                    key={check.id}
+                    className="ops-check-row"
+                    href={check.href || undefined}
+                    target={check.href ? "_blank" : undefined}
+                    rel="noreferrer"
+                    onClick={(event) => { if (!check.href) event.preventDefault(); }}
+                  >
+                    <span className={`dot ${check.status || "muted"}`} />
+                    <span className="ops-check-main">
+                      <span>{check.label}</span>
+                      <span className="mono">{check.host}</span>
+                    </span>
+                    <span className="mono ops-check-msg">{check.latencyMs ?? 0}ms · {check.message}</span>
+                  </a>
+                ))}
+                {checks.length > 5 && (
+                  <span className="ops-check-more mono">
+                    +{checks.length - 5} more checks tracked
+                  </span>
+                )}
+                {checks.length === 0 && <span className="ops-empty mono">waiting for first run</span>}
+              </div>
+            </div>
+          );
+        })}
+      </div>
+
+      {events.length > 0 && (
+        <div className="ops-event-strip">
+          {events.slice(0, 4).map((event, index) => (
+            <span key={`${event.t}-${index}`} className={`pill ${event.tone || "warn"}`}>
+              <span className={`dot ${event.tone || "warn"}`} />{event.source}: {event.msg}
+            </span>
+          ))}
+        </div>
+      )}
+    </div>
+  );
+};
+
+const OpsPanel = ({ onAction, onLogs, jobs, operations = MOCK.OPS_CENTER }) => {
   const workloads = MOCK.K3S.workloads || [];
   const allowedWorkloads = workloads.filter((w) => w.rolloutAllowed);
   return (
@@ -1810,6 +1916,7 @@ const OpsPanel = ({ onAction, onLogs, jobs }) => {
         </div>
         <span className="pill warn"><Icon name="alert" size={11} /> direct controls</span>
       </div>
+      <OpsCenter operations={operations} />
       <div className="ops-grid" style={{ padding: "var(--s-5)", display: "grid", gridTemplateColumns: "1fr 1fr 1fr", gap: 14 }}>
         <div>
           <div className="panel-title" style={{ marginBottom: 10 }}>AdGuard</div>
@@ -2422,7 +2529,7 @@ const MobileDashboard = ({
       )}
       {activeSection === "ops" && (
         <div className="mobile-tab-stack mobile-ops-stack">
-          <OpsPanel jobs={jobs} onAction={onOpsAction} onLogs={onJobLogs} />
+          <OpsPanel jobs={jobs} operations={MOCK.OPS_CENTER} onAction={onOpsAction} onLogs={onJobLogs} />
         </div>
       )}
       {activeSection === "logs" && (
@@ -2668,6 +2775,7 @@ function DashboardApp({ onLogout }) {
             {/* Direct ops controls */}
             <OpsPanel
               jobs={jobs}
+              operations={MOCK.OPS_CENTER}
               onAction={handleOpsAction}
               onLogs={handleJobLogs}
             />

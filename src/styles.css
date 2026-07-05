@@ -624,6 +624,130 @@
     grid-template-columns: minmax(0, 1fr) minmax(0, 1fr);
     gap: 8px;
   }
+
+  .ops-center {
+    padding: var(--s-5);
+    border-bottom: 1px solid var(--hairline);
+    display: flex;
+    flex-direction: column;
+    gap: 14px;
+  }
+  .ops-center-summary {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: 12px;
+    min-width: 0;
+  }
+  .ops-center-title {
+    display: flex;
+    align-items: center;
+    gap: 10px;
+    min-width: 0;
+  }
+  .ops-counts,
+  .ops-event-strip {
+    display: flex;
+    align-items: center;
+    justify-content: flex-end;
+    gap: 6px;
+    flex-wrap: wrap;
+    min-width: 0;
+  }
+  .ops-cadence-grid {
+    display: grid;
+    grid-template-columns: repeat(4, minmax(0, 1fr));
+    gap: 10px;
+  }
+  .ops-cadence {
+    min-width: 0;
+    border: 1px solid var(--hairline);
+    border-radius: 8px;
+    background: rgba(148,163,184,0.025);
+    overflow: hidden;
+  }
+  .ops-cadence.ok { border-color: rgba(45,212,191,0.22); }
+  .ops-cadence.warn { border-color: rgba(251,191,36,0.28); }
+  .ops-cadence.fail { border-color: rgba(251,113,133,0.30); }
+  .ops-cadence-head {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: 8px;
+    padding: 10px 10px 6px;
+    min-width: 0;
+  }
+  .ops-cadence-label {
+    display: flex;
+    align-items: center;
+    gap: 7px;
+    min-width: 0;
+    font-size: 12px;
+    font-weight: 500;
+  }
+  .ops-cadence-label span:last-child {
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+  }
+  .ops-cadence-meta {
+    padding: 0 10px 9px;
+    color: var(--slate-2);
+    font-size: 10px;
+  }
+  .ops-check-list {
+    display: flex;
+    flex-direction: column;
+    border-top: 1px solid var(--hairline);
+    max-height: 178px;
+    overflow: auto;
+  }
+  .ops-check-row {
+    display: grid;
+    grid-template-columns: auto minmax(0, 1fr);
+    gap: 7px;
+    align-items: start;
+    padding: 8px 10px;
+    color: inherit;
+    text-decoration: none;
+    border-bottom: 1px solid rgba(148,163,184,0.08);
+  }
+  .ops-check-row:hover {
+    background: rgba(34,211,238,0.045);
+  }
+  .ops-check-main {
+    display: grid;
+    grid-template-columns: minmax(0, 1fr) auto;
+    gap: 8px;
+    min-width: 0;
+    font-size: 11px;
+  }
+  .ops-check-main > span:first-child,
+  .ops-check-msg {
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+  }
+  .ops-check-main .mono,
+  .ops-check-msg,
+  .ops-empty,
+  .ops-check-more {
+    color: var(--slate-2);
+    font-size: 10px;
+  }
+  .ops-check-msg {
+    grid-column: 2;
+    min-width: 0;
+  }
+  .ops-empty {
+    padding: 9px 10px;
+  }
+  .ops-check-more {
+    padding: 7px 10px;
+    border-bottom: 1px solid rgba(148,163,184,0.08);
+    background: rgba(148,163,184,0.025);
+  }
+
   /* Chart panels brighten their grid + glow a touch on hover */
   @media (hover: hover) {
     .chart-panel:hover .chart-grid line { stroke: rgba(56, 189, 248, 0.22); }
@@ -653,8 +777,16 @@
       grid-template-columns: 220px minmax(0, 1fr) minmax(0, 1fr) !important;
     }
     .k3s-grid,
-    .ops-grid {
+    .ops-grid,
+    .ops-cadence-grid {
       grid-template-columns: minmax(0, 1fr) !important;
+    }
+    .ops-center-summary {
+      align-items: flex-start;
+      flex-direction: column;
+    }
+    .ops-counts {
+      justify-content: flex-start;
     }
     .webapps-grid {
       grid-template-columns: repeat(2, minmax(0, 1fr)) !important;
@@ -1021,6 +1153,7 @@
     .k3s-grid,
     .webapps-grid,
     .ops-grid,
+    .ops-cadence-grid,
     .dashboard-main-row {
       grid-template-columns: minmax(0, 1fr) !important;
     }
@@ -1089,6 +1222,17 @@
     .mobile-ops-stack .ops-grid {
       gap: 10px !important;
       padding: 10px !important;
+    }
+    .mobile-ops-stack .ops-center {
+      padding: 10px !important;
+    }
+    .mobile-ops-stack .ops-check-main {
+      grid-template-columns: minmax(0, 1fr);
+      gap: 2px;
+    }
+    .mobile-ops-stack .ops-check-msg {
+      grid-column: 2;
+      white-space: normal;
     }
     .mobile-ops-stack .ops-grid > div {
       padding-bottom: 10px;

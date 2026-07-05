@@ -10,14 +10,14 @@ APS = [
     {
         "id": "basement",
         "name": "ArcherAX3000Pro_Basement",
-        "ip": "192.168.0.117",
+        "ip": "192.168.0.118",
         "mac": "98:03:8e:65:a4:ec",
         "location": "Basement",
     },
     {
         "id": "loft",
         "name": "ArcherAX3000Pro_Loft",
-        "ip": "192.168.0.176",
+        "ip": "192.168.0.216",
         "mac": "98:03:8e:44:f7:e4",
         "location": "Loft",
     },
@@ -63,7 +63,7 @@ class FakeTplinkClient:
                     {
                         "deviceName": "ArcherAX3000Pro_Loft",
                         "mac": "98-03-8E-44-F7-E4",
-                        "ip": "192.168.0.176",
+                        "ip": "192.168.0.216",
                         "deviceTag": "wired",
                     },
                 ]
@@ -146,7 +146,7 @@ class TplinkCollectorTests(unittest.TestCase):
                             }
                         ]
                     }
-                if payload["operation"] == "loadDevice" and self.url == "http://192.168.0.176":
+                if payload["operation"] == "loadDevice" and self.url == "http://192.168.0.216":
                     return {
                         "clients": [
                             {
@@ -221,7 +221,7 @@ class TplinkCollectorTests(unittest.TestCase):
                 }
             },
             router_name="ArcherAX3000Pro_Loft",
-            router_ip="192.168.0.176",
+            router_ip="192.168.0.216",
             aps=APS,
             default_ap_id="loft",
         )

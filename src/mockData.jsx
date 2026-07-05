@@ -157,8 +157,8 @@ const TOPOLOGY = {
   counts: { total: 4, known: 6, online: 4, aps: 2, apsOnline: 2, lan: 0, wired: 1, wifi: 3, unknown: 0, mesh: 0, dnsKnown: 3 },
   updatedAt: new Date().toISOString(),
   aps: [
-    { key: "mac:98:03:8e:65:a4:ec", id: "mac:98:03:8e:65:a4:ec", apId: "basement", displayName: "ArcherAX3000Pro_Basement", sourceName: "ArcherAX3000Pro_Basement", ip: "192.168.0.117", mac: "98:03:8e:65:a4:ec", linkType: "wired", interface: "Wired", online: true, isAp: true, isMesh: true, glyph: "mesh", tone: "ok", rxKbps: 44, txKbps: 12, confidence: "high", sourceText: "router", sources: ["router"], location: "Basement" },
-    { key: "mac:98:03:8e:44:f7:e4", id: "mac:98:03:8e:44:f7:e4", apId: "loft", displayName: "ArcherAX3000Pro_Loft", sourceName: "ArcherAX3000Pro_Loft", ip: "192.168.0.176", mac: "98:03:8e:44:f7:e4", linkType: "wired", interface: "Wired", online: true, isAp: true, isMesh: true, glyph: "mesh", tone: "ok", rxKbps: 38, txKbps: 10, confidence: "high", sourceText: "router", sources: ["router"], location: "Loft" },
+    { key: "mac:98:03:8e:65:a4:ec", id: "mac:98:03:8e:65:a4:ec", apId: "basement", displayName: "ArcherAX3000Pro_Basement", sourceName: "ArcherAX3000Pro_Basement", ip: "192.168.0.118", mac: "98:03:8e:65:a4:ec", linkType: "wired", interface: "Wired", online: true, isAp: true, isMesh: true, glyph: "mesh", tone: "ok", rxKbps: 44, txKbps: 12, confidence: "high", sourceText: "router", sources: ["router"], location: "Basement" },
+    { key: "mac:98:03:8e:44:f7:e4", id: "mac:98:03:8e:44:f7:e4", apId: "loft", displayName: "ArcherAX3000Pro_Loft", sourceName: "ArcherAX3000Pro_Loft", ip: "192.168.0.216", mac: "98:03:8e:44:f7:e4", linkType: "wired", interface: "Wired", online: true, isAp: true, isMesh: true, glyph: "mesh", tone: "ok", rxKbps: 38, txKbps: 10, confidence: "high", sourceText: "router", sources: ["router"], location: "Loft" },
   ],
   groups: [
     { id: "wired", label: "Wired LAN", count: 1, online: 1, rxKbps: 11.1, txKbps: 7 },
@@ -175,4 +175,80 @@ const TOPOLOGY = {
   ],
 };
 
-export const DEFAULT_DASHBOARD = { HISTORY, KPIS, SERVICES, WEB_APPS, ADGUARD, K3S, STORAGE, LOGS, HOST, TOPOLOGY };
+const OPS_CENTER = {
+  schemaVersion: 1,
+  updatedAt: new Date().toISOString(),
+  summary: { status: "warn", ok: 14, warn: 1, fail: 0, total: 15, message: "0 failed · 1 warning", nextRunAt: new Date(Date.now() + 180000).toISOString() },
+  cadences: [
+    {
+      id: "five-minute",
+      label: "Every 5 minutes",
+      intervalSeconds: 300,
+      glyph: "activity",
+      status: "warn",
+      lastRunAt: new Date().toISOString(),
+      nextRunAt: new Date(Date.now() + 300000).toISOString(),
+      durationMs: 214,
+      checks: [
+        { id: "grid-web", label: "GRID web/API", host: "Pi4 k3s", kind: "http", status: "ok", message: "ok=true", latencyMs: 24, href: "http://192.168.0.101:8090/healthz" },
+        { id: "coinbot", label: "Coinbot API", host: "Pi5 k3s", kind: "http", status: "warn", message: "degraded=true", latencyMs: 42, href: "http://192.168.0.94:8787/health" },
+        { id: "wan-http", label: "WAN HTTPS reachability", host: "Internet", kind: "http", status: "ok", message: "HTTP 200", latencyMs: 58, href: "https://one.one.one.one/cdn-cgi/trace" },
+        { id: "portfolio-api", label: "Portfolio API", host: "Pi5", kind: "http", status: "ok", message: "ok=true", latencyMs: 35, href: "http://192.168.0.94:8099/api/health" },
+      ],
+    },
+    {
+      id: "hourly",
+      label: "Every hour",
+      intervalSeconds: 3600,
+      glyph: "clock",
+      status: "ok",
+      lastRunAt: new Date().toISOString(),
+      nextRunAt: new Date(Date.now() + 3600000).toISOString(),
+      durationMs: 180,
+      checks: [
+        { id: "wan-speed", label: "WAN speed sample", host: "Internet", kind: "speed-lite", status: "ok", message: "211.4 Mbps sample", latencyMs: 92 },
+        { id: "k3s-release", label: "k3s latest release", host: "GitHub", kind: "github-release", status: "ok", message: "latest v1.35.5+k3s1", latencyMs: 118, href: "https://github.com/k3s-io/k3s/releases/latest" },
+        { id: "hourly-backups", label: "Backup freshness", host: "Pi4", kind: "backup-recent", status: "ok", message: "newest 2.1h ago", latencyMs: 4 },
+        { id: "pi4-k3s-apps", label: "Pi4 k3s apps", host: "Pi4 k3s", kind: "k3s-local", status: "ok", message: "4/4 workloads ready", latencyMs: 3 },
+      ],
+    },
+    {
+      id: "morning",
+      label: "Every morning",
+      intervalSeconds: 86400,
+      scheduleTime: "07:00",
+      glyph: "bell",
+      status: "ok",
+      lastRunAt: new Date().toISOString(),
+      nextRunAt: new Date(Date.now() + 86400000).toISOString(),
+      durationMs: 4,
+      checks: [
+        { id: "brief", label: "Morning service brief", host: "Ops Center", kind: "operations-brief", status: "ok", message: "brief generated: 1 warning in current checks", latencyMs: 1 },
+      ],
+    },
+    {
+      id: "nightly",
+      label: "Every night",
+      intervalSeconds: 86400,
+      scheduleTime: "23:55",
+      glyph: "moon",
+      status: "ok",
+      lastRunAt: new Date().toISOString(),
+      nextRunAt: new Date(Date.now() + 86400000).toISOString(),
+      durationMs: 93,
+      checks: [
+        { id: "logrotate-timer", label: "Log rotation timer", host: "Pi4", kind: "systemd-timer", status: "ok", message: "active", latencyMs: 4 },
+        { id: "log2ram-flush", label: "log2ram daily flush", host: "Pi4", kind: "systemd-timer", status: "ok", message: "active", latencyMs: 5 },
+        { id: "tmpfiles-clean", label: "Temp/log cleanup timer", host: "Pi4", kind: "systemd-timer", status: "ok", message: "active", latencyMs: 3 },
+        { id: "root-disk", label: "Root disk headroom", host: "Pi4", kind: "disk", status: "ok", message: "22.8% used", latencyMs: 1 },
+        { id: "ssd-disk", label: "SSD headroom", host: "Pi4", kind: "disk", status: "ok", message: "31.4% used", latencyMs: 1 },
+        { id: "brain-freshness", label: "GRID brain freshness", host: "Pi4", kind: "path-freshness", status: "ok", message: "newest 0.2h ago", latencyMs: 8 },
+      ],
+    },
+  ],
+  events: [
+    { t: "06:12:09", tone: "warn", source: "Pi5 k3s", msg: "Coinbot API: degraded=true" },
+  ],
+};
+
+export const DEFAULT_DASHBOARD = { HISTORY, KPIS, SERVICES, WEB_APPS, ADGUARD, K3S, STORAGE, LOGS, HOST, TOPOLOGY, OPS_CENTER };
