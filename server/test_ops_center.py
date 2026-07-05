@@ -1,8 +1,10 @@
 import time
 import unittest
 import sys
+import tempfile
 import types
 from datetime import datetime
+from pathlib import Path
 from unittest.mock import patch
 
 try:
@@ -86,7 +88,7 @@ class OpsCenterTests(unittest.TestCase):
         nightly_ids = {check["id"] for check in appmod.OPS_CHECK_CONFIG["nightly"]}
 
         self.assertTrue({"gateway", "dns-resolver", "wan-http"}.issubset(five_minute_ids))
-        self.assertTrue({"wan-speed", "k3s-release", "hourly-backups"}.issubset(hourly_ids))
+        self.assertTrue({"wan-speed", "k3s-release", "hourly-backups", "pi5-k3s-node", "pi5-k3s-apps"}.issubset(hourly_ids))
         self.assertTrue(
             {
                 "logrotate-timer",
@@ -211,6 +213,54 @@ class OpsCenterTests(unittest.TestCase):
         self.assertEqual(result["status"], "ok")
         self.assertEqual(result["unit"], "logrotate.timer")
         self.assertEqual(result["message"], "active")
+
+    def test_ssh_k3s_operation_check_reports_remote_workloads(self):
+        cache = appmod.DashboardCache()
+        check = {
+            "id": "pi5-k3s-apps",
+            "label": "Pi5 k3s apps",
+            "host": "Pi5 k3s",
+            "kind": "ssh-k3s",
+            "sshTarget": "pi5@192.168.0.94",
+            "scope": "workloads",
+            "workloads": ["coinbot", "coinbot-website", "eagleeye"],
+        }
+        body = {
+            "items": [
+                {"kind": "Deployment", "metadata": {"name": "coinbot"}, "spec": {"replicas": 1}, "status": {"readyReplicas": 1}},
+                {"kind": "Deployment", "metadata": {"name": "coinbot-website"}, "spec": {"replicas": 1}, "status": {"readyReplicas": 1}},
+                {"kind": "Deployment", "metadata": {"name": "eagleeye"}, "spec": {"replicas": 1}, "status": {"readyReplicas": 1}},
+            ]
+        }
+        proc = types.SimpleNamespace(returncode=0, stdout=appmod.json.dumps(body), stderr="")
+
+        with patch.object(appmod, "run_cmd", return_value=proc):
+            result = cache.ssh_k3s_operation_check(check, time.monotonic())
+
+        self.assertEqual(result["status"], "ok")
+        self.assertEqual(result["message"], "3/3 workloads ready")
+
+    def test_backup_operation_check_verifies_newest_backup_contents(self):
+        cache = appmod.DashboardCache()
+        with tempfile.TemporaryDirectory() as tmp:
+            backup = Path(tmp) / "grid-current"
+            backup.mkdir()
+            (backup / "note.md").write_text("current", encoding="utf-8")
+            check = {
+                "id": "hourly-backups",
+                "label": "Backup verification",
+                "host": "Pi4",
+                "kind": "backup-recent",
+                "path": tmp,
+                "maxAgeHours": 72,
+                "verifyContents": True,
+            }
+
+            result = cache.backup_operation_check(check, time.monotonic())
+
+        self.assertEqual(result["status"], "ok")
+        self.assertEqual(result["fileCount"], 1)
+        self.assertGreater(result["bytes"], 0)
 
     def test_speed_operation_check_reports_sample_mbps(self):
         cache = appmod.DashboardCache()

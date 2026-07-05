@@ -5,6 +5,7 @@
 - The Ops panel now includes `OPS_CENTER` from the Flask sidecar: five-minute, hourly, morning, and nightly cadences are configured in `server/app.py`.
 - Five-minute checks watch gateway, DNS, WAN HTTPS, Pi4 dashboard, Pi4 k3s GRID/Uptime Kuma, and Pi5 service endpoints for Coinbot, Mission Control, EagleEye, CabreraPrograms, and Portfolio API.
 - Hourly checks include a lightweight WAN speed sample, latest k3s GitHub release lookup, `/mnt/ssd/backups` freshness, Pi4 k3s node/workload readiness, GRID schema health, local registry, and Pi5 portfolio web.
+- Hourly backup verification checks the newest backup set for real file content, and Pi5 k3s readiness is checked from Pi4 over SSH via `PI4_NOC_PI5_SSH_TARGET` (default `pi5@192.168.0.94`) using `sudo -n k3s kubectl`.
 - Morning and nightly are wall-clock schedules, not service-start intervals: morning next-runs at `07:00`, nightly at `23:55` local time. Nightly checks watch log/cleanup timers, package DB backup timer, SSD trim timer, disk headroom, GRID brain mount, and GRID brain freshness.
 - The compact UI prioritizes warn/fail checks before OK checks and shows a `+N more checks tracked` row when a cadence has more than five checks. Current live warning after deploy was `Coinbot API: degraded=true`; all other live ops checks passed.
 

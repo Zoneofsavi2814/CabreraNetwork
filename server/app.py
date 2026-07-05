@@ -39,6 +39,7 @@ SUDO_HELPER = Path(os.environ.get("PI4_NOC_SUDO_HELPER", APP_ROOT / "server" / "
 ADGUARD_CREDS = Path(os.environ.get("PI4_NOC_ADGUARD_CREDS", "/home/pi4/.adguard-home-admin"))
 LAN_IP = os.environ.get("PI4_NOC_LAN_IP", "192.168.0.101")
 PI5_IP = os.environ.get("PI4_NOC_PI5_IP", "192.168.0.94")
+PI5_SSH_TARGET = os.environ.get("PI4_NOC_PI5_SSH_TARGET", f"pi5@{PI5_IP}")
 ROUTER_IP = os.environ.get("PI4_NOC_ROUTER_IP", "192.168.0.1")
 ROUTER_NAME = os.environ.get("PI4_NOC_ROUTER_NAME", "TP-Link Archer BE400")
 SPEED_TEST_URL = os.environ.get("PI4_NOC_SPEED_TEST_URL", "https://speed.cloudflare.com/__down?bytes=1000000")
@@ -116,9 +117,11 @@ OPS_CHECK_CONFIG = {
     "hourly": [
         {"id": "wan-speed", "label": "WAN speed sample", "host": "Internet", "kind": "speed-lite", "url": SPEED_TEST_URL, "timeout": 4, "minMbps": SPEED_WARN_MBPS, "failureStatus": "warn"},
         {"id": "k3s-release", "label": "k3s latest release", "host": "GitHub", "kind": "github-release", "repo": "k3s-io/k3s", "failureStatus": "warn"},
-        {"id": "hourly-backups", "label": "Backup freshness", "host": "Pi4", "kind": "backup-recent", "path": "/mnt/ssd/backups", "maxAgeHours": 72, "failureStatus": "warn"},
+        {"id": "hourly-backups", "label": "Backup verification", "host": "Pi4", "kind": "backup-recent", "path": "/mnt/ssd/backups", "maxAgeHours": 72, "verifyContents": True, "failureStatus": "warn"},
         {"id": "pi4-k3s-node", "label": "Pi4 k3s node", "host": "Pi4 k3s", "kind": "k3s-local", "scope": "nodes", "failureStatus": "fail"},
         {"id": "pi4-k3s-apps", "label": "Pi4 k3s apps", "host": "Pi4 k3s", "kind": "k3s-local", "scope": "workloads", "workloads": ["grid", "uptime-kuma", "local-registry", "homelab-smoke"], "failureStatus": "warn"},
+        {"id": "pi5-k3s-node", "label": "Pi5 k3s node", "host": "Pi5 k3s", "kind": "ssh-k3s", "sshTarget": PI5_SSH_TARGET, "scope": "nodes", "failureStatus": "fail"},
+        {"id": "pi5-k3s-apps", "label": "Pi5 k3s apps", "host": "Pi5 k3s", "kind": "ssh-k3s", "sshTarget": PI5_SSH_TARGET, "scope": "workloads", "workloads": ["coinbot", "coinbot-website", "eagleeye"], "failureStatus": "warn"},
         {"id": "grid-index", "label": "GRID index", "host": "Pi4 k3s", "kind": "http", "url": f"http://{LAN_IP}:8090/api/stats", "jsonField": "schema_version", "jsonEquals": 3, "failureStatus": "warn"},
         {"id": "local-registry", "label": "Local registry", "host": "Pi4 k3s", "kind": "http", "url": f"http://{LAN_IP}:5000/v2/", "failureStatus": "warn"},
         {"id": "portfolio-web", "label": "Portfolio web", "host": "Pi5", "kind": "http", "url": f"http://{PI5_IP}:8080/", "failureStatus": "fail"},
@@ -225,6 +228,10 @@ def run_cmd(argv: list[str], timeout: int = 8) -> subprocess.CompletedProcess:
         stderr=subprocess.STDOUT,
         timeout=timeout,
     )
+
+
+def proc_output(proc: subprocess.CompletedProcess) -> str:
+    return "\n".join(part for part in [proc.stdout or "", getattr(proc, "stderr", "") or ""] if part).strip()
 
 
 def run_text(argv: list[str], timeout: int = 8) -> str:
@@ -1223,6 +1230,8 @@ class DashboardCache:
                 return self.dns_operation_check(check, started)
             if kind == "k3s-local":
                 return self.k3s_operation_check(check, started)
+            if kind == "ssh-k3s":
+                return self.ssh_k3s_operation_check(check, started)
             if kind == "disk":
                 return self.disk_operation_check(check, started)
             if kind == "mount":
@@ -1301,6 +1310,57 @@ class DashboardCache:
         message = f"{len(workloads) - len(degraded)}/{len(workloads)} workloads ready" if workloads else "awaiting workload data"
         return operation_check_result(check, "ok" if ok else check.get("failureStatus", "warn"), message, started)
 
+    def ssh_k3s_operation_check(self, check: dict, started: float) -> dict:
+        base = [
+            "/usr/bin/ssh",
+            "-o",
+            "BatchMode=yes",
+            "-o",
+            f"ConnectTimeout={int(check.get('connectTimeout', 4))}",
+            check["sshTarget"],
+            "sudo",
+            "-n",
+            "k3s",
+            "kubectl",
+            "get",
+        ]
+        if check.get("scope") == "nodes":
+            proc = run_cmd(base + ["nodes", "-o", "json"], timeout=float(check.get("timeout", 8)))
+            if proc.returncode != 0:
+                return operation_check_result(check, check.get("failureStatus", "fail"), proc_output(proc) or "ssh k3s check failed", started)
+            data = json.loads(proc.stdout or "{}")
+            nodes = data.get("items", [])
+            ready = [
+                node for node in nodes
+                if any(cond.get("type") == "Ready" and cond.get("status") == "True" for cond in node.get("status", {}).get("conditions", []))
+            ]
+            ok = bool(nodes) and len(ready) == len(nodes)
+            return operation_check_result(check, "ok" if ok else check.get("failureStatus", "fail"), f"{len(ready)}/{len(nodes)} nodes ready", started)
+
+        proc = run_cmd(base + ["deploy,statefulset,daemonset", "-A", "-o", "json"], timeout=float(check.get("timeout", 10)))
+        if proc.returncode != 0:
+            return operation_check_result(check, check.get("failureStatus", "warn"), proc_output(proc) or "ssh k3s workload check failed", started)
+        data = json.loads(proc.stdout or "{}")
+        targets = set(check.get("workloads", []))
+        workloads = []
+        for item in data.get("items", []):
+            name = item.get("metadata", {}).get("name")
+            if targets and name not in targets:
+                continue
+            status = item.get("status", {})
+            spec = item.get("spec", {})
+            if item.get("kind") == "DaemonSet":
+                desired = int(status.get("desiredNumberScheduled") or 0)
+                ready = int(status.get("numberReady") or 0)
+            else:
+                desired = int(spec.get("replicas") or 1)
+                ready = int(status.get("readyReplicas") or 0)
+            workloads.append({"name": name, "ready": ready, "desired": desired})
+        degraded = [workload for workload in workloads if workload["ready"] < workload["desired"]]
+        ok = bool(workloads) and not degraded
+        message = f"{len(workloads) - len(degraded)}/{len(workloads)} workloads ready" if workloads else "awaiting workload data"
+        return operation_check_result(check, "ok" if ok else check.get("failureStatus", "warn"), message, started)
+
     def disk_operation_check(self, check: dict, started: float) -> dict:
         path = Path(check["path"])
         if not path.exists():
@@ -1318,7 +1378,7 @@ class DashboardCache:
     def timer_operation_check(self, check: dict, started: float) -> dict:
         unit = check["unit"]
         proc = run_cmd(["/bin/systemctl", "is-active", unit], timeout=3)
-        state = proc.stdout.strip() or proc.stderr.strip() or "unknown"
+        state = proc_output(proc) or "unknown"
         status = "ok" if proc.returncode == 0 and state == "active" else check.get("failureStatus", "warn")
         return operation_check_result(check, status, state, started, unit=unit)
 
@@ -1327,11 +1387,21 @@ class DashboardCache:
         if not path.exists():
             return operation_check_result(check, check.get("failureStatus", "warn"), "backup path is missing", started)
         max_age = float(check.get("maxAgeHours", 72)) * 3600
-        newest = max((item.stat().st_mtime for item in path.iterdir()), default=0)
+        children = list(path.iterdir())
+        newest_item = max(children, key=lambda item: item.stat().st_mtime, default=None)
+        newest = newest_item.stat().st_mtime if newest_item else 0
         age_hours = (time.time() - newest) / 3600 if newest else None
         ok = newest > 0 and time.time() - newest <= max_age
         message = f"newest {age_hours:.1f}h ago" if age_hours is not None else "no backups found"
-        return operation_check_result(check, "ok" if ok else check.get("failureStatus", "warn"), message, started)
+        extra = {}
+        if newest_item and check.get("verifyContents"):
+            files = [newest_item] if newest_item.is_file() else [item for item in newest_item.rglob("*") if item.is_file()]
+            file_count = len(files)
+            total_bytes = sum(item.stat().st_size for item in files)
+            ok = ok and file_count >= int(check.get("minFiles", 1)) and total_bytes >= int(check.get("minBytes", 1))
+            message = f"{message}, {file_count} files, {total_bytes / 1024:.0f} KB"
+            extra = {"fileCount": file_count, "bytes": total_bytes}
+        return operation_check_result(check, "ok" if ok else check.get("failureStatus", "warn"), message, started, **extra)
 
     def path_freshness_operation_check(self, check: dict, started: float) -> dict:
         path = Path(check["path"])
