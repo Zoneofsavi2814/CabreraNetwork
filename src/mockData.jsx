@@ -178,7 +178,7 @@ const TOPOLOGY = {
 const OPS_CENTER = {
   schemaVersion: 1,
   updatedAt: new Date().toISOString(),
-  summary: { status: "warn", ok: 21, warn: 1, fail: 0, total: 22, message: "0 failed · 1 warning", nextRunAt: new Date(Date.now() + 180000).toISOString() },
+  summary: { status: "warn", ok: 22, warn: 1, fail: 0, total: 23, message: "0 failed · 1 warning", nextRunAt: new Date(Date.now() + 180000).toISOString() },
   cadences: [
     {
       id: "five-minute",
@@ -209,6 +209,7 @@ const OPS_CENTER = {
         { id: "wan-speed", label: "WAN speed sample", host: "Internet", kind: "speed-lite", status: "ok", message: "211.4 Mbps sample", latencyMs: 92 },
         { id: "k3s-release", label: "k3s latest release", host: "GitHub", kind: "github-release", status: "ok", message: "latest v1.35.5+k3s1", latencyMs: 118, href: "https://github.com/k3s-io/k3s/releases/latest" },
         { id: "hourly-backups", label: "Backup verification", host: "Pi4", kind: "backup-recent", status: "ok", message: "newest 2.1h ago, 8 files, 128 KB", latencyMs: 4 },
+        { id: "backup-artifacts", label: "Backup artifact integrity", host: "Pi4", kind: "backup-artifacts", status: "ok", message: "4 archives readable, 1 checksums verified, 2 external skipped", latencyMs: 26 },
         { id: "pi4-k3s-apps", label: "Pi4 k3s apps", host: "Pi4 k3s", kind: "k3s-local", status: "ok", message: "4/4 workloads ready", latencyMs: 3 },
         { id: "pi5-k3s-node", label: "Pi5 k3s node", host: "Pi5 k3s", kind: "ssh-k3s", status: "ok", message: "1/1 nodes ready", latencyMs: 164 },
         { id: "pi5-k3s-apps", label: "Pi5 k3s apps", host: "Pi5 k3s", kind: "ssh-k3s", status: "ok", message: "3/3 workloads ready", latencyMs: 184 },

@@ -7,6 +7,7 @@
 - Hourly checks include a lightweight WAN speed sample, latest k3s GitHub release lookup, `/mnt/ssd/backups` freshness, Pi4 k3s node/workload readiness, GRID schema health, local registry, and Pi5 portfolio web.
 - Hourly backup verification checks the newest backup set for real file content, and Pi5 k3s readiness is checked from Pi4 over SSH via `PI4_NOC_PI5_SSH_TARGET` (default `pi5@192.168.0.94`) using `sudo -n k3s kubectl`.
 - Follow-up hardening added read-only deeper health checks: timer last-trigger freshness, kernel storage/I/O journal pattern scans, inode usage and read-only mount detection for disk checks, GRID vault/index sync freshness from `/api/stats`, backup retention pressure, and a morning overnight-storage-events scan.
+- Backup artifact integrity checks now read recent `.tgz` archives and verify `.sha256` files whose targets live in the same backup folder; cross-backup/protected checksum references are counted as skipped metadata.
 - Morning and nightly are wall-clock schedules, not service-start intervals: morning next-runs at `07:00`, nightly at `23:55` local time. Nightly checks watch log/cleanup timers, package DB backup timer, SSD trim timer, disk headroom, GRID brain mount, and GRID brain freshness.
 - The compact UI prioritizes warn/fail checks before OK checks and shows a `+N more checks tracked` row when a cadence has more than five checks. Current live warning after deploy was `Coinbot API: degraded=true`; all other live ops checks passed.
 

@@ -89,7 +89,7 @@ class OpsCenterTests(unittest.TestCase):
         nightly_ids = {check["id"] for check in appmod.OPS_CHECK_CONFIG["nightly"]}
 
         self.assertTrue({"gateway", "dns-resolver", "wan-http"}.issubset(five_minute_ids))
-        self.assertTrue({"wan-speed", "k3s-release", "hourly-backups", "pi5-k3s-node", "pi5-k3s-apps"}.issubset(hourly_ids))
+        self.assertTrue({"wan-speed", "k3s-release", "hourly-backups", "backup-artifacts", "pi5-k3s-node", "pi5-k3s-apps"}.issubset(hourly_ids))
         self.assertTrue(
             {
                 "logrotate-timer",
@@ -288,6 +288,34 @@ class OpsCenterTests(unittest.TestCase):
 
         self.assertEqual(result["status"], "ok")
         self.assertEqual(result["entryCount"], 3)
+
+    def test_backup_artifacts_operation_check_reads_archives_and_checksums(self):
+        cache = appmod.DashboardCache()
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            payload = root / "payload.txt"
+            payload.write_text("backup data", encoding="utf-8")
+            archive = root / "payload.tgz"
+            with appmod.tarfile.open(archive, "w:gz") as tf:
+                tf.add(payload, arcname="payload.txt")
+            digest = appmod.hashlib.sha256(payload.read_bytes()).hexdigest()
+            (root / "payload.txt.sha256").write_text(f"{digest}  payload.txt\n", encoding="utf-8")
+            (root / "external.sha256").write_text("0" * 64 + "  /etc/hosts\n", encoding="utf-8")
+            check = {
+                "id": "backup-artifacts",
+                "label": "Backup artifact integrity",
+                "host": "Pi4",
+                "kind": "backup-artifacts",
+                "path": tmp,
+            }
+
+            result = cache.backup_artifacts_operation_check(check, time.monotonic())
+
+        self.assertEqual(result["status"], "ok")
+        self.assertEqual(result["archiveCount"], 1)
+        self.assertEqual(result["checksumVerified"], 1)
+        self.assertEqual(result["checksumFailures"], 0)
+        self.assertEqual(result["checksumSkipped"], 1)
 
     def test_grid_sync_operation_check_reports_recent_scan(self):
         cache = appmod.DashboardCache()

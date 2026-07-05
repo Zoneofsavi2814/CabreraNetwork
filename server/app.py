@@ -5,6 +5,7 @@ import argparse
 import base64
 import copy
 import gzip
+import hashlib
 import ipaddress
 import json
 import math
@@ -16,6 +17,7 @@ import secrets
 import shutil
 import socket
 import subprocess
+import tarfile
 import threading
 import time
 import uuid
@@ -118,6 +120,7 @@ OPS_CHECK_CONFIG = {
         {"id": "wan-speed", "label": "WAN speed sample", "host": "Internet", "kind": "speed-lite", "url": SPEED_TEST_URL, "timeout": 4, "minMbps": SPEED_WARN_MBPS, "failureStatus": "warn"},
         {"id": "k3s-release", "label": "k3s latest release", "host": "GitHub", "kind": "github-release", "repo": "k3s-io/k3s", "failureStatus": "warn"},
         {"id": "hourly-backups", "label": "Backup verification", "host": "Pi4", "kind": "backup-recent", "path": "/mnt/ssd/backups", "maxAgeHours": 72, "verifyContents": True, "failureStatus": "warn"},
+        {"id": "backup-artifacts", "label": "Backup artifact integrity", "host": "Pi4", "kind": "backup-artifacts", "path": "/mnt/ssd/backups", "maxArchives": 8, "maxChecksums": 8, "failureStatus": "warn"},
         {"id": "pi4-k3s-node", "label": "Pi4 k3s node", "host": "Pi4 k3s", "kind": "k3s-local", "scope": "nodes", "failureStatus": "fail"},
         {"id": "pi4-k3s-apps", "label": "Pi4 k3s apps", "host": "Pi4 k3s", "kind": "k3s-local", "scope": "workloads", "workloads": ["grid", "uptime-kuma", "local-registry", "homelab-smoke"], "failureStatus": "warn"},
         {"id": "pi5-k3s-node", "label": "Pi5 k3s node", "host": "Pi5 k3s", "kind": "ssh-k3s", "sshTarget": PI5_SSH_TARGET, "scope": "nodes", "failureStatus": "fail"},
@@ -1263,6 +1266,8 @@ class DashboardCache:
                 return self.timer_operation_check(check, started)
             if kind == "backup-recent":
                 return self.backup_operation_check(check, started)
+            if kind == "backup-artifacts":
+                return self.backup_artifacts_operation_check(check, started)
             if kind == "directory-retention":
                 return self.directory_retention_operation_check(check, started)
             if kind == "path-freshness":
@@ -1480,6 +1485,63 @@ class DashboardCache:
             message = f"{message}, {file_count} files, {total_bytes / 1024:.0f} KB"
             extra = {"fileCount": file_count, "bytes": total_bytes}
         return operation_check_result(check, "ok" if ok else check.get("failureStatus", "warn"), message, started, **extra)
+
+    def backup_artifacts_operation_check(self, check: dict, started: float) -> dict:
+        root = Path(check["path"])
+        if not root.exists():
+            return operation_check_result(check, check.get("failureStatus", "warn"), "backup path is missing", started)
+        archives = sorted(root.rglob("*.tgz"), key=lambda item: item.stat().st_mtime, reverse=True)[: int(check.get("maxArchives", 8))]
+        checksums = sorted(root.rglob("*.sha256"), key=lambda item: item.stat().st_mtime, reverse=True)[: int(check.get("maxChecksums", 8))]
+        archive_failures = 0
+        verified_checksums = 0
+        checksum_failures = 0
+        skipped_checksums = 0
+        for archive in archives:
+            try:
+                with tarfile.open(archive, "r:*") as tf:
+                    if not tf.getmembers():
+                        archive_failures += 1
+            except Exception:
+                archive_failures += 1
+        for checksum in checksums:
+            try:
+                text = checksum.read_text(encoding="utf-8", errors="replace").splitlines()[0].strip()
+                expected, target_text = text.split(None, 1)
+                target_text = target_text.lstrip("*")
+                target = Path(target_text)
+                if not target.is_absolute():
+                    target = checksum.parent / target
+                target_resolved = target.resolve()
+                try:
+                    target_resolved.relative_to(checksum.parent.resolve())
+                except ValueError:
+                    skipped_checksums += 1
+                    continue
+                if not target_resolved.exists():
+                    checksum_failures += 1
+                    continue
+                digest = hashlib.sha256(target_resolved.read_bytes()).hexdigest()
+                if digest.lower() == expected.lower():
+                    verified_checksums += 1
+                else:
+                    checksum_failures += 1
+            except Exception:
+                checksum_failures += 1
+        ok = archive_failures == 0 and checksum_failures == 0 and (archives or verified_checksums)
+        message = f"{len(archives)} archives readable, {verified_checksums} checksums verified"
+        if skipped_checksums:
+            message = f"{message}, {skipped_checksums} external skipped"
+        return operation_check_result(
+            check,
+            "ok" if ok else check.get("failureStatus", "warn"),
+            message,
+            started,
+            archiveCount=len(archives),
+            archiveFailures=archive_failures,
+            checksumVerified=verified_checksums,
+            checksumFailures=checksum_failures,
+            checksumSkipped=skipped_checksums,
+        )
 
     def directory_retention_operation_check(self, check: dict, started: float) -> dict:
         path = Path(check["path"])
