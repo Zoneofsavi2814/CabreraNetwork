@@ -13,6 +13,7 @@ except ModuleNotFoundError:
     fake_psutil = types.ModuleType("psutil")
     fake_psutil.net_io_counters = lambda: types.SimpleNamespace(bytes_recv=0, bytes_sent=0)
     fake_psutil.disk_io_counters = lambda: types.SimpleNamespace(read_bytes=0, write_bytes=0)
+    fake_psutil.disk_usage = lambda path: types.SimpleNamespace(percent=0)
     fake_psutil.cpu_percent = lambda interval=None: 0
     sys.modules["psutil"] = fake_psutil
 
@@ -96,10 +97,13 @@ class OpsCenterTests(unittest.TestCase):
                 "tmpfiles-clean",
                 "dpkg-backup",
                 "ssd-trim",
+                "kernel-io-health",
                 "root-disk",
                 "ssd-disk",
                 "brain-mount",
                 "brain-freshness",
+                "grid-vault-sync",
+                "backup-retention",
             }.issubset(nightly_ids)
         )
         self.assertEqual(appmod.OPS_CADENCE_CONFIG[2]["scheduleTime"], "07:00")
@@ -204,15 +208,18 @@ class OpsCenterTests(unittest.TestCase):
             "host": "Pi4",
             "kind": "systemd-timer",
             "unit": "logrotate.timer",
+            "maxLastHours": 36,
         }
-        proc = types.SimpleNamespace(returncode=0, stdout="active\n", stderr="")
+        now_text = datetime.fromtimestamp(time.time()).strftime("%a %Y-%m-%d %H:%M:%S MDT")
+        proc = types.SimpleNamespace(returncode=0, stdout=f"ActiveState=active\nLastTriggerUSec={now_text}\nNextElapseUSecRealtime=\n", stderr="")
 
         with patch.object(appmod, "run_cmd", return_value=proc):
             result = cache.timer_operation_check(check, time.monotonic())
 
         self.assertEqual(result["status"], "ok")
         self.assertEqual(result["unit"], "logrotate.timer")
-        self.assertEqual(result["message"], "active")
+        self.assertIn("active", result["message"])
+        self.assertIn("lastAgeHours", result)
 
     def test_ssh_k3s_operation_check_reports_remote_workloads(self):
         cache = appmod.DashboardCache()
@@ -261,6 +268,87 @@ class OpsCenterTests(unittest.TestCase):
         self.assertEqual(result["status"], "ok")
         self.assertEqual(result["fileCount"], 1)
         self.assertGreater(result["bytes"], 0)
+
+    def test_directory_retention_operation_check_reports_pressure(self):
+        cache = appmod.DashboardCache()
+        with tempfile.TemporaryDirectory() as tmp:
+            for index in range(3):
+                (Path(tmp) / f"backup-{index}").mkdir()
+            check = {
+                "id": "backup-retention",
+                "label": "Backup retention pressure",
+                "host": "Pi4",
+                "kind": "directory-retention",
+                "path": tmp,
+                "maxEntries": 5,
+                "maxOldestDays": 180,
+            }
+
+            result = cache.directory_retention_operation_check(check, time.monotonic())
+
+        self.assertEqual(result["status"], "ok")
+        self.assertEqual(result["entryCount"], 3)
+
+    def test_grid_sync_operation_check_reports_recent_scan(self):
+        cache = appmod.DashboardCache()
+        check = {
+            "id": "grid-vault-sync",
+            "label": "GRID vault/index sync",
+            "host": "Pi4 k3s",
+            "kind": "grid-sync",
+            "url": "http://example.test/api/stats",
+            "minNotes": 1,
+            "maxScanAgeMinutes": 30,
+        }
+        body = appmod.json.dumps({"notes": 42, "last_scan_at": datetime.now().isoformat()})
+
+        with patch.object(appmod.urlrequest, "urlopen", return_value=FakeResponse(body)):
+            result = cache.grid_sync_operation_check(check, time.monotonic())
+
+        self.assertEqual(result["status"], "ok")
+        self.assertEqual(result["notes"], 42)
+        self.assertLessEqual(result["scanAgeMinutes"], 1)
+
+    def test_journal_pattern_operation_check_flags_matching_errors(self):
+        cache = appmod.DashboardCache()
+        check = {
+            "id": "kernel-io-health",
+            "label": "Kernel storage errors",
+            "host": "Pi4",
+            "kind": "journal-pattern",
+            "since": "24 hours ago",
+            "patterns": ["I/O error"],
+        }
+        proc = types.SimpleNamespace(returncode=0, stdout="Jul 05 host kernel: Buffer I/O error on dev sda1\n", stderr="")
+
+        with patch.object(appmod, "run_cmd", return_value=proc):
+            result = cache.journal_pattern_operation_check(check, time.monotonic())
+
+        self.assertEqual(result["status"], "warn")
+        self.assertEqual(result["matchCount"], 1)
+
+    def test_disk_operation_check_includes_inode_and_mount_mode(self):
+        cache = appmod.DashboardCache()
+        check = {
+            "id": "root-disk",
+            "label": "Root disk headroom",
+            "host": "Pi4",
+            "kind": "disk",
+            "path": "/",
+            "maxPct": 85,
+            "maxInodePct": 85,
+        }
+        usage = types.SimpleNamespace(percent=22.5)
+        df_proc = types.SimpleNamespace(returncode=0, stdout="Filesystem Inodes IUsed IFree IUse% Mounted on\n/dev/root 100 4 96 4% /\n", stderr="")
+        mount_proc = types.SimpleNamespace(returncode=0, stdout="rw,noatime\n", stderr="")
+
+        with patch.object(appmod.psutil, "disk_usage", return_value=usage), patch.object(appmod, "run_cmd", side_effect=[df_proc, mount_proc]):
+            result = cache.disk_operation_check(check, time.monotonic())
+
+        self.assertEqual(result["status"], "ok")
+        self.assertEqual(result["inodePct"], 4.0)
+        self.assertFalse(result["readOnly"])
+        self.assertIn("rw", result["message"])
 
     def test_speed_operation_check_reports_sample_mbps(self):
         cache = appmod.DashboardCache()

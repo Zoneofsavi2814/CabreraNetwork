@@ -178,7 +178,7 @@ const TOPOLOGY = {
 const OPS_CENTER = {
   schemaVersion: 1,
   updatedAt: new Date().toISOString(),
-  summary: { status: "warn", ok: 16, warn: 1, fail: 0, total: 17, message: "0 failed · 1 warning", nextRunAt: new Date(Date.now() + 180000).toISOString() },
+  summary: { status: "warn", ok: 21, warn: 1, fail: 0, total: 22, message: "0 failed · 1 warning", nextRunAt: new Date(Date.now() + 180000).toISOString() },
   cadences: [
     {
       id: "five-minute",
@@ -226,6 +226,7 @@ const OPS_CENTER = {
       durationMs: 4,
       checks: [
         { id: "brief", label: "Morning service brief", host: "Ops Center", kind: "operations-brief", status: "ok", message: "brief generated: 1 warning in current checks", latencyMs: 1 },
+        { id: "overnight-storage-events", label: "Overnight storage events", host: "Pi4", kind: "journal-pattern", status: "ok", message: "no matching events since 12 hours ago", latencyMs: 12 },
       ],
     },
     {
@@ -239,12 +240,15 @@ const OPS_CENTER = {
       nextRunAt: new Date(Date.now() + 86400000).toISOString(),
       durationMs: 93,
       checks: [
-        { id: "logrotate-timer", label: "Log rotation timer", host: "Pi4", kind: "systemd-timer", status: "ok", message: "active", latencyMs: 4 },
-        { id: "log2ram-flush", label: "log2ram daily flush", host: "Pi4", kind: "systemd-timer", status: "ok", message: "active", latencyMs: 5 },
-        { id: "tmpfiles-clean", label: "Temp/log cleanup timer", host: "Pi4", kind: "systemd-timer", status: "ok", message: "active", latencyMs: 3 },
-        { id: "root-disk", label: "Root disk headroom", host: "Pi4", kind: "disk", status: "ok", message: "22.8% used", latencyMs: 1 },
-        { id: "ssd-disk", label: "SSD headroom", host: "Pi4", kind: "disk", status: "ok", message: "31.4% used", latencyMs: 1 },
+        { id: "logrotate-timer", label: "Log rotation timer", host: "Pi4", kind: "systemd-timer", status: "ok", message: "active, last 2.0h ago", latencyMs: 4 },
+        { id: "log2ram-flush", label: "log2ram daily flush", host: "Pi4", kind: "systemd-timer", status: "ok", message: "active, last 2.1h ago", latencyMs: 5 },
+        { id: "tmpfiles-clean", label: "Temp/log cleanup timer", host: "Pi4", kind: "systemd-timer", status: "ok", message: "active, last 6.8h ago", latencyMs: 3 },
+        { id: "kernel-io-health", label: "Kernel storage errors", host: "Pi4", kind: "journal-pattern", status: "ok", message: "no matching events since 24 hours ago", latencyMs: 16 },
+        { id: "root-disk", label: "Root disk headroom", host: "Pi4", kind: "disk", status: "ok", message: "8.3% used, 4.0% inodes, rw", latencyMs: 1 },
+        { id: "ssd-disk", label: "SSD headroom", host: "Pi4", kind: "disk", status: "ok", message: "0.3% used, 1.0% inodes, rw", latencyMs: 1 },
         { id: "brain-freshness", label: "GRID brain freshness", host: "Pi4", kind: "path-freshness", status: "ok", message: "newest 0.2h ago", latencyMs: 8 },
+        { id: "grid-vault-sync", label: "GRID vault/index sync", host: "Pi4 k3s", kind: "grid-sync", status: "ok", message: "42 notes, scan 0.1m ago", latencyMs: 32 },
+        { id: "backup-retention", label: "Backup retention pressure", host: "Pi4", kind: "directory-retention", status: "ok", message: "14 entries, oldest 58d", latencyMs: 2 },
       ],
     },
   ],

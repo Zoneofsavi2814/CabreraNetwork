@@ -128,17 +128,21 @@ OPS_CHECK_CONFIG = {
     ],
     "morning": [
         {"id": "brief", "label": "Morning service brief", "host": "Ops Center", "kind": "operations-brief", "failureStatus": "warn"},
+        {"id": "overnight-storage-events", "label": "Overnight storage events", "host": "Pi4", "kind": "journal-pattern", "since": "12 hours ago", "patterns": ["I/O error", "EXT4-fs error", "Buffer I/O", "blk_update_request", "mmc.*error", "sda.*error", "filesystem.*error", "read-only file system"], "failureStatus": "warn"},
     ],
     "nightly": [
-        {"id": "logrotate-timer", "label": "Log rotation timer", "host": "Pi4", "kind": "systemd-timer", "unit": "logrotate.timer", "failureStatus": "warn"},
-        {"id": "log2ram-flush", "label": "log2ram daily flush", "host": "Pi4", "kind": "systemd-timer", "unit": "log2ram-daily.timer", "failureStatus": "warn"},
-        {"id": "tmpfiles-clean", "label": "Temp/log cleanup timer", "host": "Pi4", "kind": "systemd-timer", "unit": "systemd-tmpfiles-clean.timer", "failureStatus": "warn"},
-        {"id": "dpkg-backup", "label": "Package DB backup timer", "host": "Pi4", "kind": "systemd-timer", "unit": "dpkg-db-backup.timer", "failureStatus": "warn"},
-        {"id": "ssd-trim", "label": "SSD trim timer", "host": "Pi4", "kind": "systemd-timer", "unit": "fstrim.timer", "failureStatus": "warn"},
-        {"id": "root-disk", "label": "Root disk headroom", "host": "Pi4", "kind": "disk", "path": "/", "maxPct": 85, "failureStatus": "warn"},
-        {"id": "ssd-disk", "label": "SSD headroom", "host": "Pi4", "kind": "disk", "path": "/mnt/ssd", "maxPct": 85, "failureStatus": "warn"},
+        {"id": "logrotate-timer", "label": "Log rotation timer", "host": "Pi4", "kind": "systemd-timer", "unit": "logrotate.timer", "maxLastHours": 36, "failureStatus": "warn"},
+        {"id": "log2ram-flush", "label": "log2ram daily flush", "host": "Pi4", "kind": "systemd-timer", "unit": "log2ram-daily.timer", "maxLastHours": 36, "failureStatus": "warn"},
+        {"id": "tmpfiles-clean", "label": "Temp/log cleanup timer", "host": "Pi4", "kind": "systemd-timer", "unit": "systemd-tmpfiles-clean.timer", "maxLastHours": 48, "failureStatus": "warn"},
+        {"id": "dpkg-backup", "label": "Package DB backup timer", "host": "Pi4", "kind": "systemd-timer", "unit": "dpkg-db-backup.timer", "maxLastHours": 36, "failureStatus": "warn"},
+        {"id": "ssd-trim", "label": "SSD trim timer", "host": "Pi4", "kind": "systemd-timer", "unit": "fstrim.timer", "maxLastHours": 192, "failureStatus": "warn"},
+        {"id": "kernel-io-health", "label": "Kernel storage errors", "host": "Pi4", "kind": "journal-pattern", "since": "24 hours ago", "patterns": ["I/O error", "EXT4-fs error", "Buffer I/O", "blk_update_request", "mmc.*error", "sda.*error", "filesystem.*error", "read-only file system"], "failureStatus": "warn"},
+        {"id": "root-disk", "label": "Root disk headroom", "host": "Pi4", "kind": "disk", "path": "/", "maxPct": 85, "maxInodePct": 85, "failureStatus": "warn"},
+        {"id": "ssd-disk", "label": "SSD headroom", "host": "Pi4", "kind": "disk", "path": "/mnt/ssd", "maxPct": 85, "maxInodePct": 85, "failureStatus": "warn"},
         {"id": "brain-mount", "label": "GRID brain mount", "host": "Pi4", "kind": "mount", "path": "/mnt/nas/brain", "failureStatus": "fail"},
         {"id": "brain-freshness", "label": "GRID brain freshness", "host": "Pi4", "kind": "path-freshness", "path": "/mnt/nas/brain", "maxAgeHours": 168, "recursive": True, "failureStatus": "warn"},
+        {"id": "grid-vault-sync", "label": "GRID vault/index sync", "host": "Pi4 k3s", "kind": "grid-sync", "url": f"http://{LAN_IP}:8090/api/stats", "minNotes": 1, "maxScanAgeMinutes": 30, "failureStatus": "warn"},
+        {"id": "backup-retention", "label": "Backup retention pressure", "host": "Pi4", "kind": "directory-retention", "path": "/mnt/ssd/backups", "maxEntries": 50, "maxOldestDays": 180, "failureStatus": "warn"},
     ],
 }
 
@@ -286,6 +290,25 @@ def status_tone(status: str) -> str:
 
 def iso_from_ts(ts: float | None = None) -> str:
     return datetime.fromtimestamp(ts if ts is not None else time.time()).isoformat()
+
+
+def iso_age_seconds(value: str) -> float | None:
+    try:
+        parsed = datetime.fromisoformat(value.replace("Z", "+00:00"))
+    except Exception:
+        return None
+    now = datetime.now(parsed.tzinfo) if parsed.tzinfo else datetime.now()
+    return max(0, (now - parsed).total_seconds())
+
+
+def parse_systemd_local_ts(value: str) -> float | None:
+    match = re.search(r"(\d{4}-\d{2}-\d{2} \d{2}:\d{2}:\d{2})", value or "")
+    if not match:
+        return None
+    try:
+        return datetime.strptime(match.group(1), "%Y-%m-%d %H:%M:%S").timestamp()
+    except Exception:
+        return None
 
 
 def parse_schedule_time(value: str) -> tuple[int, int]:
@@ -1240,8 +1263,14 @@ class DashboardCache:
                 return self.timer_operation_check(check, started)
             if kind == "backup-recent":
                 return self.backup_operation_check(check, started)
+            if kind == "directory-retention":
+                return self.directory_retention_operation_check(check, started)
             if kind == "path-freshness":
                 return self.path_freshness_operation_check(check, started)
+            if kind == "grid-sync":
+                return self.grid_sync_operation_check(check, started)
+            if kind == "journal-pattern":
+                return self.journal_pattern_operation_check(check, started)
             if kind == "operations-brief":
                 return self.brief_operation_check(check, started)
             if kind == "speed-lite":
@@ -1367,8 +1396,40 @@ class DashboardCache:
             return operation_check_result(check, check.get("failureStatus", "warn"), "path is missing", started)
         usage = psutil.disk_usage(str(path))
         max_pct = float(check.get("maxPct", 85))
-        status = "ok" if usage.percent < max_pct else check.get("failureStatus", "warn")
-        return operation_check_result(check, status, f"{usage.percent:.1f}% used", started, usedPct=round(usage.percent, 1))
+        inode_pct = None
+        df_proc = run_cmd(["/usr/bin/df", "-Pi", str(path)], timeout=3)
+        if df_proc.returncode == 0:
+            lines = [line for line in (df_proc.stdout or "").splitlines() if line.strip()]
+            if len(lines) >= 2:
+                parts = lines[-1].split()
+                if len(parts) >= 5:
+                    try:
+                        inode_pct = float(parts[4].rstrip("%"))
+                    except ValueError:
+                        inode_pct = None
+        mount_options = ""
+        mount_proc = run_cmd(["/usr/bin/findmnt", "--target", str(path), "-no", "OPTIONS"], timeout=3)
+        if mount_proc.returncode == 0:
+            mount_options = (mount_proc.stdout or "").strip()
+        max_inode_pct = float(check.get("maxInodePct", 85))
+        read_only = "ro" in {part.strip() for part in mount_options.split(",")}
+        ok = usage.percent < max_pct and not read_only
+        if inode_pct is not None:
+            ok = ok and inode_pct < max_inode_pct
+        message = f"{usage.percent:.1f}% used"
+        if inode_pct is not None:
+            message = f"{message}, {inode_pct:.1f}% inodes"
+        if mount_options:
+            message = f"{message}, {'ro' if read_only else 'rw'}"
+        return operation_check_result(
+            check,
+            "ok" if ok else check.get("failureStatus", "warn"),
+            message,
+            started,
+            usedPct=round(usage.percent, 1),
+            inodePct=round(inode_pct, 1) if inode_pct is not None else None,
+            readOnly=read_only,
+        )
 
     def mount_operation_check(self, check: dict, started: float) -> dict:
         proc = run_cmd(["/usr/bin/findmnt", check["path"]], timeout=3)
@@ -1377,10 +1438,27 @@ class DashboardCache:
 
     def timer_operation_check(self, check: dict, started: float) -> dict:
         unit = check["unit"]
-        proc = run_cmd(["/bin/systemctl", "is-active", unit], timeout=3)
-        state = proc_output(proc) or "unknown"
-        status = "ok" if proc.returncode == 0 and state == "active" else check.get("failureStatus", "warn")
-        return operation_check_result(check, status, state, started, unit=unit)
+        proc = run_cmd(["/bin/systemctl", "show", unit, "-p", "ActiveState", "-p", "LastTriggerUSec", "-p", "NextElapseUSecRealtime"], timeout=3)
+        if proc.returncode != 0:
+            return operation_check_result(check, check.get("failureStatus", "warn"), proc_output(proc) or "timer check failed", started, unit=unit)
+        fields = {}
+        for line in (proc.stdout or "").splitlines():
+            if "=" in line:
+                key, value = line.split("=", 1)
+                fields[key] = value
+        state = fields.get("ActiveState") or "unknown"
+        last_text = fields.get("LastTriggerUSec") or ""
+        last_ts = parse_systemd_local_ts(last_text)
+        last_age_hours = (time.time() - last_ts) / 3600 if last_ts else None
+        max_last = check.get("maxLastHours")
+        ok = state == "active"
+        if max_last is not None:
+            ok = ok and last_age_hours is not None and last_age_hours <= float(max_last)
+        if last_age_hours is None:
+            message = state
+        else:
+            message = f"{state}, last {last_age_hours:.1f}h ago"
+        return operation_check_result(check, "ok" if ok else check.get("failureStatus", "warn"), message, started, unit=unit, lastAgeHours=round(last_age_hours, 1) if last_age_hours is not None else None)
 
     def backup_operation_check(self, check: dict, started: float) -> dict:
         path = Path(check["path"])
@@ -1403,6 +1481,24 @@ class DashboardCache:
             extra = {"fileCount": file_count, "bytes": total_bytes}
         return operation_check_result(check, "ok" if ok else check.get("failureStatus", "warn"), message, started, **extra)
 
+    def directory_retention_operation_check(self, check: dict, started: float) -> dict:
+        path = Path(check["path"])
+        if not path.exists():
+            return operation_check_result(check, check.get("failureStatus", "warn"), "path is missing", started)
+        entries = []
+        for item in path.iterdir():
+            try:
+                entries.append((item, item.stat().st_mtime))
+            except OSError:
+                continue
+        count = len(entries)
+        oldest_age_days = (time.time() - min((mtime for _, mtime in entries), default=time.time())) / 86400
+        max_entries = int(check.get("maxEntries", 50))
+        max_oldest_days = float(check.get("maxOldestDays", 180))
+        ok = count <= max_entries and oldest_age_days <= max_oldest_days
+        message = f"{count} entries, oldest {oldest_age_days:.0f}d"
+        return operation_check_result(check, "ok" if ok else check.get("failureStatus", "warn"), message, started, entryCount=count, oldestAgeDays=round(oldest_age_days, 1))
+
     def path_freshness_operation_check(self, check: dict, started: float) -> dict:
         path = Path(check["path"])
         if not path.exists():
@@ -1413,6 +1509,32 @@ class DashboardCache:
         age_hours = (time.time() - newest) / 3600
         ok = time.time() - newest <= max_age
         return operation_check_result(check, "ok" if ok else check.get("failureStatus", "warn"), f"newest {age_hours:.1f}h ago", started)
+
+    def grid_sync_operation_check(self, check: dict, started: float) -> dict:
+        req = urlrequest.Request(check["url"], headers={"User-Agent": "pi4-noc-ops/1.0"})
+        with urlrequest.urlopen(req, timeout=float(check.get("timeout", 3))) as resp:
+            data = json.loads(resp.read(int(check.get("maxBodyBytes", 262144))).decode("utf-8", "replace") or "{}")
+        notes = int(data.get("notes") or 0)
+        min_notes = int(check.get("minNotes", 1))
+        age_seconds = iso_age_seconds(str(data.get("last_scan_at") or ""))
+        max_age_seconds = float(check.get("maxScanAgeMinutes", 30)) * 60
+        ok = notes >= min_notes and age_seconds is not None and age_seconds <= max_age_seconds
+        age_minutes = age_seconds / 60 if age_seconds is not None else None
+        message = f"{notes} notes, scan {age_minutes:.1f}m ago" if age_minutes is not None else f"{notes} notes, scan age unknown"
+        return operation_check_result(check, "ok" if ok else check.get("failureStatus", "warn"), message, started, notes=notes, scanAgeMinutes=round(age_minutes, 1) if age_minutes is not None else None)
+
+    def journal_pattern_operation_check(self, check: dict, started: float) -> dict:
+        proc = run_cmd(["/usr/bin/journalctl", "-k", "--since", check.get("since", "24 hours ago"), "--no-pager"], timeout=float(check.get("timeout", 5)))
+        if proc.returncode != 0:
+            return operation_check_result(check, check.get("failureStatus", "warn"), proc_output(proc) or "journal scan failed", started)
+        patterns = [re.compile(pattern, re.I) for pattern in check.get("patterns", [])]
+        matches = []
+        for line in (proc.stdout or "").splitlines():
+            if any(pattern.search(line) for pattern in patterns):
+                matches.append(line)
+        ok = not matches
+        message = f"no matching events since {check.get('since', '24 hours ago')}" if ok else f"{len(matches)} matching events"
+        return operation_check_result(check, "ok" if ok else check.get("failureStatus", "warn"), message, started, matchCount=len(matches))
 
     def brief_operation_check(self, check: dict, started: float) -> dict:
         with self.lock:
