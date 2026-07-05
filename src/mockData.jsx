@@ -178,7 +178,7 @@ const TOPOLOGY = {
 const OPS_CENTER = {
   schemaVersion: 1,
   updatedAt: new Date().toISOString(),
-  summary: { status: "warn", ok: 22, warn: 1, fail: 0, total: 23, message: "0 failed · 1 warning", nextRunAt: new Date(Date.now() + 180000).toISOString() },
+  summary: { status: "warn", ok: 25, warn: 1, fail: 0, total: 26, message: "0 failed · 1 warning", nextRunAt: new Date(Date.now() + 180000).toISOString() },
   cadences: [
     {
       id: "five-minute",
@@ -193,6 +193,8 @@ const OPS_CENTER = {
         { id: "grid-web", label: "GRID web/API", host: "Pi4 k3s", kind: "http", status: "ok", message: "ok=true", latencyMs: 24, href: "http://192.168.0.101:8090/healthz" },
         { id: "coinbot", label: "Coinbot API", host: "Pi5 k3s", kind: "http", status: "warn", message: "degraded=true", latencyMs: 42, href: "http://192.168.0.94:8787/health" },
         { id: "wan-http", label: "WAN HTTPS reachability", host: "Internet", kind: "http", status: "ok", message: "HTTP 200", latencyMs: 58, href: "https://one.one.one.one/cdn-cgi/trace" },
+        { id: "wan-latency", label: "WAN endpoint latency", host: "Internet", kind: "multi-http", status: "ok", message: "3/3 endpoints, avg 213ms", latencyMs: 641 },
+        { id: "dns-latency", label: "DNS latency", host: "Pi4", kind: "multi-dns", status: "ok", message: "3/3 names, avg 34ms", latencyMs: 102 },
         { id: "portfolio-api", label: "Portfolio API", host: "Pi5", kind: "http", status: "ok", message: "ok=true", latencyMs: 35, href: "http://192.168.0.94:8099/api/health" },
       ],
     },
@@ -248,6 +250,7 @@ const OPS_CENTER = {
         { id: "root-disk", label: "Root disk headroom", host: "Pi4", kind: "disk", status: "ok", message: "8.3% used, 4.0% inodes, rw", latencyMs: 1 },
         { id: "ssd-disk", label: "SSD headroom", host: "Pi4", kind: "disk", status: "ok", message: "0.3% used, 1.0% inodes, rw", latencyMs: 1 },
         { id: "brain-freshness", label: "GRID brain freshness", host: "Pi4", kind: "path-freshness", status: "ok", message: "newest 0.2h ago", latencyMs: 8 },
+        { id: "brain-vault-parity", label: "GRID vault path parity", host: "Pi4", kind: "path-parity", status: "ok", message: "42 source, 42 target", latencyMs: 19 },
         { id: "grid-vault-sync", label: "GRID vault/index sync", host: "Pi4 k3s", kind: "grid-sync", status: "ok", message: "42 notes, scan 0.1m ago", latencyMs: 32 },
         { id: "backup-retention", label: "Backup retention pressure", host: "Pi4", kind: "directory-retention", status: "ok", message: "14 entries, oldest 58d", latencyMs: 2 },
       ],

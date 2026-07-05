@@ -88,7 +88,7 @@ class OpsCenterTests(unittest.TestCase):
         hourly_ids = {check["id"] for check in appmod.OPS_CHECK_CONFIG["hourly"]}
         nightly_ids = {check["id"] for check in appmod.OPS_CHECK_CONFIG["nightly"]}
 
-        self.assertTrue({"gateway", "dns-resolver", "wan-http"}.issubset(five_minute_ids))
+        self.assertTrue({"gateway", "dns-resolver", "wan-http", "wan-latency", "dns-latency"}.issubset(five_minute_ids))
         self.assertTrue({"wan-speed", "k3s-release", "hourly-backups", "backup-artifacts", "pi5-k3s-node", "pi5-k3s-apps"}.issubset(hourly_ids))
         self.assertTrue(
             {
@@ -102,6 +102,7 @@ class OpsCenterTests(unittest.TestCase):
                 "ssd-disk",
                 "brain-mount",
                 "brain-freshness",
+                "brain-vault-parity",
                 "grid-vault-sync",
                 "backup-retention",
             }.issubset(nightly_ids)
@@ -186,6 +187,42 @@ class OpsCenterTests(unittest.TestCase):
         self.assertEqual(result["status"], "warn")
         self.assertEqual(result["httpStatus"], 200)
         self.assertIn("degraded", result["message"])
+
+    def test_multi_http_operation_check_reports_average_latency(self):
+        cache = appmod.DashboardCache()
+        check = {
+            "id": "wan-latency",
+            "label": "WAN endpoint latency",
+            "host": "Internet",
+            "kind": "multi-http",
+            "urls": ["https://one.test", "https://two.test"],
+            "maxAvgMs": 1000,
+        }
+
+        with patch.object(appmod.urlrequest, "urlopen", return_value=FakeResponse("ok")):
+            result = cache.multi_http_operation_check(check, time.monotonic())
+
+        self.assertEqual(result["status"], "ok")
+        self.assertEqual(result["failures"], 0)
+        self.assertIn("2/2 endpoints", result["message"])
+
+    def test_multi_dns_operation_check_reports_average_latency(self):
+        cache = appmod.DashboardCache()
+        check = {
+            "id": "dns-latency",
+            "label": "DNS latency",
+            "host": "Pi4",
+            "kind": "multi-dns",
+            "targets": ["one.test", "two.test"],
+            "maxAvgMs": 1000,
+        }
+
+        with patch.object(appmod.socket, "getaddrinfo", return_value=[("family", "socktype")]):
+            result = cache.multi_dns_operation_check(check, time.monotonic())
+
+        self.assertEqual(result["status"], "ok")
+        self.assertEqual(result["failures"], 0)
+        self.assertIn("2/2 names", result["message"])
 
     def test_brief_operation_check_does_not_replay_stale_warnings(self):
         cache = appmod.DashboardCache()
@@ -336,6 +373,58 @@ class OpsCenterTests(unittest.TestCase):
         self.assertEqual(result["status"], "ok")
         self.assertEqual(result["notes"], 42)
         self.assertLessEqual(result["scanAgeMinutes"], 1)
+
+    def test_path_parity_operation_check_compares_files(self):
+        cache = appmod.DashboardCache()
+        with tempfile.TemporaryDirectory() as tmp:
+            source = Path(tmp) / "source"
+            target = Path(tmp) / "target"
+            source.mkdir()
+            target.mkdir()
+            (source / "note.md").write_text("same", encoding="utf-8")
+            (target / "note.md").write_text("same", encoding="utf-8")
+            check = {
+                "id": "brain-vault-parity",
+                "label": "GRID vault path parity",
+                "host": "Pi4",
+                "kind": "path-parity",
+                "source": str(source),
+                "target": str(target),
+                "pattern": "*.md",
+            }
+
+            result = cache.path_parity_operation_check(check, time.monotonic())
+
+        self.assertEqual(result["status"], "ok")
+        self.assertEqual(result["sourceCount"], 1)
+        self.assertEqual(result["targetCount"], 1)
+        self.assertEqual(result["mismatchCount"], 0)
+
+    def test_path_parity_operation_check_allows_unreadable_hashes(self):
+        cache = appmod.DashboardCache()
+        with tempfile.TemporaryDirectory() as tmp:
+            source = Path(tmp) / "source"
+            target = Path(tmp) / "target"
+            source.mkdir()
+            target.mkdir()
+            (source / "note.md").write_text("same", encoding="utf-8")
+            (target / "note.md").write_text("same", encoding="utf-8")
+            check = {
+                "id": "brain-vault-parity",
+                "label": "GRID vault path parity",
+                "host": "Pi4",
+                "kind": "path-parity",
+                "source": str(source),
+                "target": str(target),
+                "pattern": "*.md",
+            }
+
+            with patch.object(appmod.Path, "read_bytes", side_effect=OSError("permission denied")):
+                result = cache.path_parity_operation_check(check, time.monotonic())
+
+        self.assertEqual(result["status"], "ok")
+        self.assertEqual(result["unreadableCount"], 2)
+        self.assertEqual(result["mismatchCount"], 0)
 
     def test_journal_pattern_operation_check_flags_matching_errors(self):
         cache = appmod.DashboardCache()

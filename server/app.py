@@ -106,6 +106,8 @@ OPS_CHECK_CONFIG = {
         {"id": "gateway", "label": "Gateway reachability", "host": "Router", "kind": "ping", "target": ROUTER_IP, "failureStatus": "fail"},
         {"id": "dns-resolver", "label": "DNS resolver", "host": "Pi4", "kind": "dns", "target": "example.com", "failureStatus": "fail"},
         {"id": "wan-http", "label": "WAN HTTPS reachability", "host": "Internet", "kind": "http", "url": "https://one.one.one.one/cdn-cgi/trace", "timeout": 2.5, "failureStatus": "warn"},
+        {"id": "wan-latency", "label": "WAN endpoint latency", "host": "Internet", "kind": "multi-http", "urls": ["https://one.one.one.one/cdn-cgi/trace", "https://www.google.com/generate_204", "https://cloudflare.com/cdn-cgi/trace"], "timeout": 4, "maxAvgMs": 1000, "failureStatus": "warn"},
+        {"id": "dns-latency", "label": "DNS latency", "host": "Pi4", "kind": "multi-dns", "targets": ["one.one.one.one", "google.com", "github.com"], "maxAvgMs": 500, "failureStatus": "warn"},
         {"id": "pi4-noc", "label": "Cabrera Network", "host": "Pi4", "kind": "http", "url": f"http://{LAN_IP}/api/session", "expectJson": True, "failureStatus": "warn"},
         {"id": "grid-web", "label": "GRID web/API", "host": "Pi4 k3s", "kind": "http", "url": f"http://{LAN_IP}:8090/healthz", "jsonField": "ok", "jsonEquals": True, "failureStatus": "fail"},
         {"id": "grid-mcp", "label": "GRID MCP", "host": "Pi4 k3s", "kind": "http", "url": f"http://{LAN_IP}:7777/healthz", "jsonField": "ok", "jsonEquals": True, "failureStatus": "fail"},
@@ -144,6 +146,7 @@ OPS_CHECK_CONFIG = {
         {"id": "ssd-disk", "label": "SSD headroom", "host": "Pi4", "kind": "disk", "path": "/mnt/ssd", "maxPct": 85, "maxInodePct": 85, "failureStatus": "warn"},
         {"id": "brain-mount", "label": "GRID brain mount", "host": "Pi4", "kind": "mount", "path": "/mnt/nas/brain", "failureStatus": "fail"},
         {"id": "brain-freshness", "label": "GRID brain freshness", "host": "Pi4", "kind": "path-freshness", "path": "/mnt/nas/brain", "maxAgeHours": 168, "recursive": True, "failureStatus": "warn"},
+        {"id": "brain-vault-parity", "label": "GRID vault path parity", "host": "Pi4", "kind": "path-parity", "source": "/mnt/nas/brain", "target": "/mnt/ssd/nas/brain", "pattern": "*.md", "maxHashFiles": 50, "failureStatus": "warn"},
         {"id": "grid-vault-sync", "label": "GRID vault/index sync", "host": "Pi4 k3s", "kind": "grid-sync", "url": f"http://{LAN_IP}:8090/api/stats", "minNotes": 1, "maxScanAgeMinutes": 30, "failureStatus": "warn"},
         {"id": "backup-retention", "label": "Backup retention pressure", "host": "Pi4", "kind": "directory-retention", "path": "/mnt/ssd/backups", "maxEntries": 50, "maxOldestDays": 180, "failureStatus": "warn"},
     ],
@@ -1250,10 +1253,14 @@ class DashboardCache:
         try:
             if kind == "http":
                 return self.http_operation_check(check, started)
+            if kind == "multi-http":
+                return self.multi_http_operation_check(check, started)
             if kind == "ping":
                 return self.ping_operation_check(check, started)
             if kind == "dns":
                 return self.dns_operation_check(check, started)
+            if kind == "multi-dns":
+                return self.multi_dns_operation_check(check, started)
             if kind == "k3s-local":
                 return self.k3s_operation_check(check, started)
             if kind == "ssh-k3s":
@@ -1272,6 +1279,8 @@ class DashboardCache:
                 return self.directory_retention_operation_check(check, started)
             if kind == "path-freshness":
                 return self.path_freshness_operation_check(check, started)
+            if kind == "path-parity":
+                return self.path_parity_operation_check(check, started)
             if kind == "grid-sync":
                 return self.grid_sync_operation_check(check, started)
             if kind == "journal-pattern":
@@ -1312,6 +1321,29 @@ class DashboardCache:
                 return operation_check_result(check, "warn", f"{warn_field}=true", started, httpStatus=code)
             return operation_check_result(check, "ok" if ok else status, message, started, httpStatus=code)
 
+    def multi_http_operation_check(self, check: dict, started: float) -> dict:
+        latencies = []
+        failures = []
+        for url in check.get("urls", []):
+            probe_started = time.monotonic()
+            try:
+                req = urlrequest.Request(url, headers={"User-Agent": "pi4-noc-ops/1.0"})
+                with urlrequest.urlopen(req, timeout=float(check.get("timeout", 4))) as resp:
+                    resp.read(int(check.get("maxBodyBytes", 2048)))
+                    code = getattr(resp, "status", resp.getcode())
+                if int(code) < 200 or int(code) >= 400:
+                    failures.append(f"HTTP {code}")
+                latencies.append((time.monotonic() - probe_started) * 1000)
+            except Exception as exc:
+                failures.append(type(exc).__name__)
+        avg_ms = sum(latencies) / len(latencies) if latencies else None
+        max_avg = float(check.get("maxAvgMs", 1000))
+        ok = not failures and avg_ms is not None and avg_ms <= max_avg
+        message = f"{len(latencies)}/{len(check.get('urls', []))} endpoints, avg {avg_ms:.0f}ms" if avg_ms is not None else "no endpoints reached"
+        if failures:
+            message = f"{message}, {len(failures)} failed"
+        return operation_check_result(check, "ok" if ok else check.get("failureStatus", "warn"), message, started, avgMs=round(avg_ms, 1) if avg_ms is not None else None, failures=len(failures))
+
     def ping_operation_check(self, check: dict, started: float) -> dict:
         proc = run_cmd(["/bin/ping", "-c", "1", "-W", "2", check["target"]], timeout=3)
         status = "ok" if proc.returncode == 0 else check.get("failureStatus", "fail")
@@ -1322,6 +1354,24 @@ class DashboardCache:
         target = check.get("target", "example.com")
         ip = socket.gethostbyname(target)
         return operation_check_result(check, "ok", f"{target} -> {ip}", started)
+
+    def multi_dns_operation_check(self, check: dict, started: float) -> dict:
+        latencies = []
+        failures = []
+        for target in check.get("targets", []):
+            probe_started = time.monotonic()
+            try:
+                socket.getaddrinfo(target, 443)
+                latencies.append((time.monotonic() - probe_started) * 1000)
+            except Exception as exc:
+                failures.append(type(exc).__name__)
+        avg_ms = sum(latencies) / len(latencies) if latencies else None
+        max_avg = float(check.get("maxAvgMs", 500))
+        ok = not failures and avg_ms is not None and avg_ms <= max_avg
+        message = f"{len(latencies)}/{len(check.get('targets', []))} names, avg {avg_ms:.0f}ms" if avg_ms is not None else "no names resolved"
+        if failures:
+            message = f"{message}, {len(failures)} failed"
+        return operation_check_result(check, "ok" if ok else check.get("failureStatus", "warn"), message, started, avgMs=round(avg_ms, 1) if avg_ms is not None else None, failures=len(failures))
 
     def k3s_operation_check(self, check: dict, started: float) -> dict:
         with self.lock:
@@ -1571,6 +1621,61 @@ class DashboardCache:
         age_hours = (time.time() - newest) / 3600
         ok = time.time() - newest <= max_age
         return operation_check_result(check, "ok" if ok else check.get("failureStatus", "warn"), f"newest {age_hours:.1f}h ago", started)
+
+    def path_parity_operation_check(self, check: dict, started: float) -> dict:
+        source = Path(check["source"])
+        target = Path(check["target"])
+        pattern = check.get("pattern", "*")
+        if not source.exists() or not target.exists():
+            return operation_check_result(check, check.get("failureStatus", "warn"), "source or target path is missing", started)
+
+        unreadable_count = 0
+
+        def collect(root: Path) -> dict[str, tuple[int, int, str | None]]:
+            nonlocal unreadable_count
+            files = sorted(item for item in root.rglob(pattern) if item.is_file())
+            max_hash = int(check.get("maxHashFiles", 50))
+            result = {}
+            for index, item in enumerate(files):
+                rel = str(item.relative_to(root))
+                stat = item.stat()
+                digest = None
+                if index < max_hash:
+                    try:
+                        digest = hashlib.sha256(item.read_bytes()).hexdigest()
+                    except OSError:
+                        unreadable_count += 1
+                result[rel] = (stat.st_size, int(stat.st_mtime), digest)
+            return result
+
+        source_files = collect(source)
+        target_files = collect(target)
+        source_keys = set(source_files)
+        target_keys = set(target_files)
+        missing = sorted(source_keys - target_keys)
+        extra = sorted(target_keys - source_keys)
+        mismatched = [
+            rel for rel in sorted(source_keys & target_keys)
+            if source_files[rel][0] != target_files[rel][0] or (
+                source_files[rel][2] is not None and target_files[rel][2] is not None and source_files[rel][2] != target_files[rel][2]
+            )
+        ]
+        ok = not missing and not extra and not mismatched
+        message = f"{len(source_files)} source, {len(target_files)} target"
+        if not ok:
+            message = f"{message}, {len(missing)} missing, {len(extra)} extra, {len(mismatched)} mismatched"
+        return operation_check_result(
+            check,
+            "ok" if ok else check.get("failureStatus", "warn"),
+            message,
+            started,
+            sourceCount=len(source_files),
+            targetCount=len(target_files),
+            missingCount=len(missing),
+            extraCount=len(extra),
+            mismatchCount=len(mismatched),
+            unreadableCount=unreadable_count,
+        )
 
     def grid_sync_operation_check(self, check: dict, started: float) -> dict:
         req = urlrequest.Request(check["url"], headers={"User-Agent": "pi4-noc-ops/1.0"})
