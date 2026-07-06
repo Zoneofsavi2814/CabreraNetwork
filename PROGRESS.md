@@ -17,7 +17,7 @@ Files changed:
 
 Commands run:
 - `python3 -m py_compile server/app.py server/notifications.py server/sudo_ops.py server/tplink_collector.py server/test_ops_center.py` - pass
-- `python3 -m unittest discover -s server -p 'test_*.py' -v` - pass, 39 tests
+- `python3 -m unittest discover -s server -p 'test_*.py' -v` - pass, 41 tests
 - `npm run build` - pass
 - `git diff --check` - pass
 - Pi4 deploy: `rsync ... && ssh pi4@192.168.0.101 'cd /home/pi4/cabrera-network-deploy/CabreraNetwork && scripts/install-pi.sh'` - pass
@@ -27,14 +27,15 @@ Live validation:
 - `http://192.168.0.101/` returned HTTP 200.
 - `/api/session` returned `authenticated: false`.
 - `systemctl show pi4-noc.service` includes `EnvironmentFile=-/etc/pi4-noc/notify.env` and `PI4_NOC_STATE_DIR=/var/lib/pi4-noc`.
-- `/etc/pi4-noc/notify.env.example` exists as `root:pi4` `0640`; `/etc/pi4-noc/notify.env` is not configured yet.
+- `/etc/pi4-noc/notify.env.example` exists as `root:pi4` `0640`; `/etc/pi4-noc/notify.env` exists as `root:pi4` `0640` and points form webhook delivery at FormSubmit for `zoneofsavi@gmail.com`.
 - `/var/lib/pi4-noc` exists as `pi4:pi4` `0750`.
-- One-off notification import on Pi4 reported `configured False` and state path `/var/lib/pi4-noc/notification-state.json`.
-- Forced live `OPS_CENTER` refresh after loading k3s state returned 40 checks: 40 ok, 0 warn, 0 fail.
-- No notification state file was created during force refresh.
+- One-off notification import with `/etc/pi4-noc/notify.env` sourced reported `configured True`, `webhook_configured True`, and `email_configured False`.
+- FormSubmit activation email was accepted by the recipient, and Pi4 controlled test notifications returned `sent True`.
+- Forced live `OPS_CENTER` refresh after loading k3s state returned 40 checks: 39 ok, 1 warn, 0 fail; the warning was `Coinbot API: degraded=true`.
+- No notification state file was created by force refresh or direct test sends.
 
 Blockers:
-- None for code/deploy. Delivery still needs `/etc/pi4-noc/notify.env` populated with SMTP and/or webhook settings.
+- None for code/deploy. FormSubmit is active; a future SMTP account can replace or supplement it if wanted.
 
 Next action:
-- Add real SMTP/webhook settings to `/etc/pi4-noc/notify.env`, restart `pi4-noc.service`, then send a controlled dry-run/test notification.
+- Watch the next `07:00` morning digest and any future `fail` check to confirm normal scheduled dispatch writes `/var/lib/pi4-noc/notification-state.json`.

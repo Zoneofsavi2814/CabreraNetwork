@@ -10,6 +10,7 @@ from datetime import datetime
 from email.message import EmailMessage
 from email.utils import formatdate
 from pathlib import Path
+from urllib import parse as urlparse
 from urllib import request as urlrequest
 
 SECRET_RE = re.compile(r"(?i)(password|passwd|token|secret|apikey|api_key|authorization)([=: ]+)(\S+)")
@@ -388,8 +389,41 @@ class NotificationManager:
             "body": body,
             "sentAt": datetime.now().isoformat(),
         }
-        data = json.dumps(payload).encode("utf-8")
+        headers = {"Accept": "application/json", "User-Agent": "pi4-noc/notifications"}
+        if self.env.get("PI4_NOC_NOTIFY_WEBHOOK_REFERER", "").strip():
+            headers["Referer"] = self.env["PI4_NOC_NOTIFY_WEBHOOK_REFERER"].strip()
+        if self.env.get("PI4_NOC_NOTIFY_WEBHOOK_FORMAT", "json").strip().lower() in {"form", "form-urlencoded", "x-www-form-urlencoded"}:
+            form_payload = {
+                "name": self.env.get("PI4_NOC_NOTIFY_WEBHOOK_NAME", "Cabrera Network Ops Center"),
+                "email": self.env.get("PI4_NOC_NOTIFY_WEBHOOK_FROM", "pi4-noc@cabrera-network.local"),
+                "subject": subject,
+                "_subject": subject,
+                "message": body,
+                "source": payload["source"],
+                "severity": severity,
+                "sentAt": payload["sentAt"],
+                "_captcha": self.env.get("PI4_NOC_NOTIFY_WEBHOOK_CAPTCHA", "false"),
+                "_template": self.env.get("PI4_NOC_NOTIFY_WEBHOOK_TEMPLATE", "table"),
+            }
+            data = urlparse.urlencode(form_payload).encode("utf-8")
+            headers["Content-Type"] = "application/x-www-form-urlencoded"
+        else:
+            data = json.dumps(payload).encode("utf-8")
+            headers["Content-Type"] = "application/json"
         timeout = float(self.env.get("PI4_NOC_NOTIFY_WEBHOOK_TIMEOUT_SECONDS", "10"))
-        req = urlrequest.Request(url, data=data, headers={"Content-Type": "application/json", "User-Agent": "pi4-noc/notifications"}, method="POST")
+        req = urlrequest.Request(url, data=data, headers=headers, method="POST")
         with urlrequest.urlopen(req, timeout=timeout) as resp:
-            resp.read(1024)
+            raw = resp.read(65536)
+            status = resp.getcode() if hasattr(resp, "getcode") else 200
+            if status >= 400:
+                raise RuntimeError(f"webhook returned HTTP {status}")
+            try:
+                response = json.loads(raw.decode("utf-8", "replace") or "{}")
+            except Exception:
+                response = {}
+            if isinstance(response, dict):
+                success = str(response.get("success", "")).strip().lower()
+                if success in {"false", "0", "no"}:
+                    raise RuntimeError(str(response.get("message") or "webhook reported failure"))
+                if response.get("error"):
+                    raise RuntimeError(str(response.get("error")))

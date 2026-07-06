@@ -23,9 +23,11 @@ scripts/install-pi.sh
 
 ## Ops Notifications
 
-The Ops Center can send the `Every morning` digest and any critical red alert (`fail` checks) by email or generic JSON webhook. Copy `/etc/pi4-noc/notify.env.example` to `/etc/pi4-noc/notify.env`, fill in SMTP and/or webhook settings, and restart `pi4-noc.service`.
+The Ops Center can send the `Every morning` digest and any critical red alert (`fail` checks) by email or webhook. Copy `/etc/pi4-noc/notify.env.example` to `/etc/pi4-noc/notify.env`, fill in SMTP and/or webhook settings, and restart `pi4-noc.service`.
 
 Notification state is stored in `/var/lib/pi4-noc/notification-state.json` so morning digests send once per day and critical failures are deduped until recovery or the configured cooldown.
+
+Webhook delivery defaults to JSON. Set `PI4_NOC_NOTIFY_WEBHOOK_FORMAT=form` for form-encoded relay providers such as FormSubmit.
 
 ## Remote Access
 

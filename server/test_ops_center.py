@@ -53,6 +53,7 @@ except ModuleNotFoundError:
     sys.modules["flask"] = fake_flask
 
 from server import app as appmod
+from server import notifications as notifymod
 
 
 def datetime_from_parts(year, month, day, hour, minute):
@@ -291,6 +292,42 @@ class OpsCenterTests(unittest.TestCase):
 
         cache.ops_notifier = FailingNotifier()
         cache.dispatch_operation_notifications({}, [], now=datetime_from_parts(2026, 7, 6, 8, 0))
+
+    def test_form_webhook_sends_provider_compatible_payload(self):
+        captured = {}
+
+        def fake_urlopen(req, timeout=0):
+            captured["url"] = req.full_url
+            captured["timeout"] = timeout
+            captured["headers"] = dict(req.header_items())
+            captured["data"] = req.data.decode()
+            return FakeResponse('{"success":"true"}')
+
+        notifier = appmod.NotificationManager(
+            {
+                "PI4_NOC_NOTIFY_WEBHOOK_URL": "https://formsubmit.co/ajax/zoneofsavi@gmail.com",
+                "PI4_NOC_NOTIFY_WEBHOOK_FORMAT": "form",
+                "PI4_NOC_NOTIFY_WEBHOOK_REFERER": "http://192.168.0.101/",
+            }
+        )
+
+        with patch.object(notifymod.urlrequest, "urlopen", side_effect=fake_urlopen):
+            notifier.send_webhook("Ops subject", "Ops body", severity="morning")
+
+        self.assertEqual(captured["url"], "https://formsubmit.co/ajax/zoneofsavi@gmail.com")
+        self.assertEqual(captured["headers"]["Content-type"], "application/x-www-form-urlencoded")
+        self.assertEqual(captured["headers"]["Referer"], "http://192.168.0.101/")
+        self.assertIn("_subject=Ops+subject", captured["data"])
+        self.assertIn("message=Ops+body", captured["data"])
+        self.assertIn("_captcha=false", captured["data"])
+
+    def test_webhook_failure_response_is_not_counted_as_delivered(self):
+        notifier = appmod.NotificationManager({"PI4_NOC_NOTIFY_WEBHOOK_URL": "https://notify.test"})
+
+        with patch.object(notifymod.urlrequest, "urlopen", return_value=FakeResponse('{"success":"false","message":"needs activation"}')):
+            delivered = notifier.send("Ops subject", "Ops body", severity="morning")
+
+        self.assertFalse(delivered)
 
     def test_http_operation_check_warns_on_degraded_json(self):
         cache = appmod.DashboardCache()
