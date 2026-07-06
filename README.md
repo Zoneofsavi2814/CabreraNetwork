@@ -21,6 +21,12 @@ npm run build
 scripts/install-pi.sh
 ```
 
+## Ops Notifications
+
+The Ops Center can send the `Every morning` digest and any critical red alert (`fail` checks) by email or generic JSON webhook. Copy `/etc/pi4-noc/notify.env.example` to `/etc/pi4-noc/notify.env`, fill in SMTP and/or webhook settings, and restart `pi4-noc.service`.
+
+Notification state is stored in `/var/lib/pi4-noc/notification-state.json` so morning digests send once per day and critical failures are deduped until recovery or the configured cooldown.
+
 ## Remote Access
 
 Cabrera Network is intended to stay private. Remote access should use Tailscale with the Pi4 as a subnet router for `192.168.0.0/24`; do not expose the dashboard with router port forwarding.

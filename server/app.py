@@ -31,8 +31,10 @@ import psutil
 from flask import Flask, Response, jsonify, request, send_from_directory, session
 
 try:
+    from .notifications import NotificationManager
     from .tplink_collector import TplinkTopologyCollector
 except ImportError:  # pragma: no cover - used when app.py is executed directly on the Pi
+    from notifications import NotificationManager
     from tplink_collector import TplinkTopologyCollector
 
 APP_ROOT = Path(__file__).resolve().parent.parent
@@ -865,6 +867,7 @@ class DashboardCache:
         self.adguard_client_hints: dict[str, dict] = {}
         self.name_cache: dict[str, dict] = {}
         self.operations_last_run: dict[str, float] = {}
+        self.ops_notifier = NotificationManager()
         self.router_topology_doc: dict = {}
         self.router_collector_status: dict = self.empty_router_collector_status("not_polled", "Router collector has not polled yet")
         self.router_collector = TplinkTopologyCollector(
@@ -1231,6 +1234,14 @@ class DashboardCache:
                 "cadences": cadences,
                 "events": events,
             }
+            ops_snapshot = copy.deepcopy(self.snapshot_data["OPS_CENTER"])
+        self.dispatch_operation_notifications(ops_snapshot, due_configs, force=force, now=now)
+
+    def dispatch_operation_notifications(self, ops: dict, due_configs: list[dict], *, force: bool = False, now: float | None = None) -> None:
+        try:
+            self.ops_notifier.dispatch_operation_notifications(ops, due_configs, force=force, now=now)
+        except Exception as exc:
+            print(f"pi4-noc notification dispatch failed: {redact(str(exc))}", flush=True)
 
     def run_operations_cadence(self, cfg: dict) -> list[dict]:
         checks = OPS_CHECK_CONFIG.get(cfg["id"], [])

@@ -82,6 +82,39 @@ class FakeResponse:
         return self.status
 
 
+class RecordingNotificationManager(appmod.NotificationManager):
+    def __init__(self, state_path: Path):
+        super().__init__({"PI4_NOC_NOTIFY_WEBHOOK_URL": "http://notify.test", "PI4_NOC_NOTIFY_STATE": str(state_path)})
+        self.sent = []
+
+    def send(self, subject: str, body: str, *, severity: str = "info") -> bool:
+        self.sent.append({"subject": subject, "body": body, "severity": severity})
+        return True
+
+
+def ops_snapshot(*checks):
+    cadences = [{"id": "five-minute", "label": "Every 5 minutes", "checks": list(checks)}]
+    return {
+        "schemaVersion": 1,
+        "updatedAt": datetime.now().isoformat(),
+        "summary": appmod.summarize_operations(cadences),
+        "cadences": cadences,
+        "events": [],
+    }
+
+
+def ops_check(id_, status, message="detail", label=None, host="Pi4"):
+    return {
+        "id": id_,
+        "label": label or id_.replace("-", " ").title(),
+        "host": host,
+        "kind": "fake",
+        "status": status,
+        "message": message,
+        "latencyMs": 1,
+    }
+
+
 class OpsCenterTests(unittest.TestCase):
     def test_ops_config_covers_required_cadence_work(self):
         five_minute_ids = {check["id"] for check in appmod.OPS_CHECK_CONFIG["five-minute"]}
@@ -167,6 +200,97 @@ class OpsCenterTests(unittest.TestCase):
         self.assertEqual(first["summary"]["status"], "ok")
         self.assertEqual(first["cadences"][0]["checks"][0]["message"], "healthy")
         self.assertEqual(second["cadences"][0]["lastRunAt"], first["cadences"][0]["lastRunAt"])
+
+    def test_morning_notification_sends_once_per_day(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            notifier = RecordingNotificationManager(Path(tmp) / "notify-state.json")
+            ops = ops_snapshot(ops_check("brief", "ok", "brief generated"))
+            due = [{"id": "morning", "label": "Every morning"}]
+            now = datetime_from_parts(2026, 7, 6, 7, 1)
+
+            first = notifier.dispatch_operation_notifications(ops, due, now=now)
+            second = notifier.dispatch_operation_notifications(ops, due, now=now + 60)
+
+        self.assertEqual(len(first), 1)
+        self.assertEqual(second, [])
+        self.assertEqual(len(notifier.sent), 1)
+        self.assertEqual(notifier.sent[0]["severity"], "morning")
+        self.assertIn("all green", notifier.sent[0]["subject"])
+
+    def test_critical_notification_dedupes_until_recovery(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            notifier = RecordingNotificationManager(Path(tmp) / "notify-state.json")
+            due = [{"id": "five-minute", "label": "Every 5 minutes"}]
+            start = datetime_from_parts(2026, 7, 6, 8, 0)
+            failing = ops_snapshot(ops_check("grid-web", "fail", "health check failed", "GRID web/API"))
+            recovered = ops_snapshot(ops_check("grid-web", "ok", "healthy", "GRID web/API"))
+
+            notifier.dispatch_operation_notifications(failing, due, now=start)
+            notifier.dispatch_operation_notifications(failing, due, now=start + 300)
+            notifier.dispatch_operation_notifications(recovered, due, now=start + 600)
+            notifier.dispatch_operation_notifications(failing, due, now=start + 900)
+
+        self.assertEqual([item["severity"] for item in notifier.sent], ["critical", "critical"])
+        self.assertIn("GRID web/API", notifier.sent[0]["subject"])
+
+    def test_critical_notification_resends_after_cooldown(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            notifier = RecordingNotificationManager(Path(tmp) / "notify-state.json")
+            notifier.env["PI4_NOC_NOTIFY_CRITICAL_COOLDOWN_SECONDS"] = "60"
+            due = [{"id": "five-minute", "label": "Every 5 minutes"}]
+            start = datetime_from_parts(2026, 7, 6, 8, 0)
+            failing = ops_snapshot(ops_check("portfolio-api", "fail", "HTTP 500", "Portfolio API"))
+
+            notifier.dispatch_operation_notifications(failing, due, now=start)
+            notifier.dispatch_operation_notifications(failing, due, now=start + 30)
+            notifier.dispatch_operation_notifications(failing, due, now=start + 61)
+
+        self.assertEqual(len(notifier.sent), 2)
+
+    def test_warning_checks_do_not_send_critical_notifications(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            notifier = RecordingNotificationManager(Path(tmp) / "notify-state.json")
+            ops = ops_snapshot(ops_check("wan-speed", "warn", "slow sample", "WAN speed sample"))
+
+            notifier.dispatch_operation_notifications(ops, [{"id": "five-minute"}], now=datetime_from_parts(2026, 7, 6, 8, 0))
+
+        self.assertEqual(notifier.sent, [])
+
+    def test_force_refresh_does_not_send_notifications(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            notifier = RecordingNotificationManager(Path(tmp) / "notify-state.json")
+            failing = ops_snapshot(ops_check("grid-mcp", "fail", "down", "GRID MCP"))
+
+            result = notifier.dispatch_operation_notifications(
+                failing,
+                [{"id": "morning", "label": "Every morning"}, {"id": "five-minute", "label": "Every 5 minutes"}],
+                force=True,
+                now=datetime_from_parts(2026, 7, 6, 7, 1),
+            )
+
+        self.assertEqual(result, [])
+        self.assertEqual(notifier.sent, [])
+
+    def test_notification_body_redacts_secret_shaped_text(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            notifier = RecordingNotificationManager(Path(tmp) / "notify-state.json")
+            failing = ops_snapshot(ops_check("grid-mcp", "fail", "token=abc123 leaked", "GRID MCP"))
+
+            notifier.dispatch_operation_notifications(failing, [{"id": "five-minute"}], now=datetime_from_parts(2026, 7, 6, 8, 0))
+
+        self.assertEqual(len(notifier.sent), 1)
+        self.assertNotIn("abc123", notifier.sent[0]["body"])
+        self.assertIn("<redacted>", notifier.sent[0]["body"])
+
+    def test_notification_dispatch_failure_does_not_break_operations(self):
+        cache = appmod.DashboardCache()
+
+        class FailingNotifier:
+            def dispatch_operation_notifications(self, *_args, **_kwargs):
+                raise RuntimeError("password=supersecret")
+
+        cache.ops_notifier = FailingNotifier()
+        cache.dispatch_operation_notifications({}, [], now=datetime_from_parts(2026, 7, 6, 8, 0))
 
     def test_http_operation_check_warns_on_degraded_json(self):
         cache = appmod.DashboardCache()

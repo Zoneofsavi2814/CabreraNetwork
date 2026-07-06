@@ -10,6 +10,7 @@
 - Backup artifact integrity checks now read recent `.tgz` archives and verify `.sha256` files whose targets live in the same backup folder; cross-backup/protected checksum references are counted as skipped metadata.
 - Five-minute internet monitoring now includes multi-endpoint HTTP latency and DNS latency probes. Nightly sync/parity coverage includes a GRID vault path parity check between `/mnt/nas/brain` and `/mnt/ssd/nas/brain`; unreadable protected note contents fall back to metadata parity.
 - Morning and nightly are wall-clock schedules, not service-start intervals: morning next-runs at `07:00`, nightly at `23:55` local time. Nightly checks watch log/cleanup timers, package DB backup timer, SSD trim timer, disk headroom, GRID brain mount, and GRID brain freshness.
+- Ops notifications are configurable through `/etc/pi4-noc/notify.env` with a sample at `/etc/pi4-noc/notify.env.example`; delivery supports SMTP email or a generic JSON webhook, with dedupe state in `/var/lib/pi4-noc/notification-state.json`.
 - The compact UI prioritizes warn/fail checks before OK checks and shows a `+N more checks tracked` row when a cadence has more than five checks. Current live warning after deploy was `Coinbot API: degraded=true`; all other live ops checks passed.
 
 ## 2026-06-09 Probe-Based Status, Speed + Mobile Pass
