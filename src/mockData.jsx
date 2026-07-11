@@ -53,7 +53,7 @@ const KPIS = [
   { id: "cpu",   label: "CPU",         glyph: "cpu",            value: 23,    suffix: "%",  status: "ok",   delta: "+3%",   deltaTone: "neutral", history: HISTORY.cpu },
   { id: "ram",   label: "Memory",      glyph: "ram",            value: 41,    suffix: "%",  status: "ok",   delta: "-1%",   deltaTone: "down",    history: HISTORY.ram, sub: "1680 / 4096 MB" },
   { id: "temp",  label: "Temperature", glyph: "thermo",         value: 52.4,  suffix: "°C", status: "ok",   delta: "+0.8°", deltaTone: "neutral", history: HISTORY.temp },
-  { id: "ssd",   label: "SSD Used",    glyph: "disk",           value: 21.1,  suffix: "%",  status: "ok",   delta: "+0.1%", deltaTone: "neutral", history: HISTORY.ssdPct, sub: "380 / 1800 GB" },
+  { id: "ssd",   label: "Data HDD Used", glyph: "disk",          value: 21.1,  suffix: "%",  status: "ok",   delta: "+0.1%", deltaTone: "neutral", history: HISTORY.ssdPct, sub: "380 / 1800 GB" },
   { id: "dns",   label: "DNS / min",   glyph: "dns",            value: 307,   suffix: "",   status: "ok",   delta: "+12%",  deltaTone: "up",      history: HISTORY.dnsPerMin },
 ];
 
@@ -118,7 +118,7 @@ const K3S = {
 
 const STORAGE = {
   root:   { used: 12,  total: 32,   fs: "ext4", mount: "/" },
-  ssd:    { used: 380, total: 1800, fs: "ext4", mount: "/mnt/ssd", segments: [
+  ssd:    { label: "Data HDD", media: "HDD", model: "WDC WD20SDRW-11VUUS1", device: "/dev/sda1", rotational: true, transport: "USB", used: 380, total: 1800, fs: "ext4", mount: "/mnt/ssd", segments: [
     { label: "nas",    value: 312, tone: "ok" },
     { label: "other",  value: 68,  tone: "muted" },
   ]},
@@ -195,7 +195,7 @@ const OPS_CENTER = {
         { id: "wan-http", label: "WAN HTTPS reachability", host: "Internet", kind: "http", status: "ok", message: "HTTP 200", latencyMs: 58, href: "https://one.one.one.one/cdn-cgi/trace" },
         { id: "wan-latency", label: "WAN endpoint latency", host: "Internet", kind: "multi-http", status: "ok", message: "3/3 endpoints, avg 213ms", latencyMs: 641 },
         { id: "dns-latency", label: "DNS latency", host: "Pi4", kind: "multi-dns", status: "ok", message: "3/3 names, avg 34ms", latencyMs: 102 },
-        { id: "portfolio-api", label: "Portfolio API", host: "Pi5", kind: "http", status: "ok", message: "ok=true", latencyMs: 35, href: "http://192.168.0.94:8099/api/health" },
+        { id: "portfolio-api", label: "Portfolio API", host: "Pi5", kind: "http", status: "ok", message: "ok=true", latencyMs: 35, href: "https://raspberrypi5.tail83be27.ts.net/api/health" },
       ],
     },
     {
@@ -248,7 +248,7 @@ const OPS_CENTER = {
         { id: "tmpfiles-clean", label: "Temp/log cleanup timer", host: "Pi4", kind: "systemd-timer", status: "ok", message: "active, last 6.8h ago", latencyMs: 3 },
         { id: "kernel-io-health", label: "Kernel storage errors", host: "Pi4", kind: "journal-pattern", status: "ok", message: "no matching events since 24 hours ago", latencyMs: 16 },
         { id: "root-disk", label: "Root disk headroom", host: "Pi4", kind: "disk", status: "ok", message: "8.3% used, 4.0% inodes, rw", latencyMs: 1 },
-        { id: "ssd-disk", label: "SSD headroom", host: "Pi4", kind: "disk", status: "ok", message: "0.3% used, 1.0% inodes, rw", latencyMs: 1 },
+        { id: "data-hdd-disk", label: "Data HDD headroom", host: "Pi4", kind: "disk", status: "ok", message: "0.3% used, 1.0% inodes, rw", latencyMs: 1 },
         { id: "brain-freshness", label: "GRID brain freshness", host: "Pi4", kind: "path-freshness", status: "ok", message: "newest 0.2h ago", latencyMs: 8 },
         { id: "brain-vault-parity", label: "GRID vault path parity", host: "Pi4", kind: "path-parity", status: "ok", message: "42 source, 42 target", latencyMs: 19 },
         { id: "grid-vault-sync", label: "GRID vault/index sync", host: "Pi4 k3s", kind: "grid-sync", status: "ok", message: "42 notes, scan 0.1m ago", latencyMs: 32 },

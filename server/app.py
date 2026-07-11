@@ -14,6 +14,7 @@ import os
 import platform
 import re
 import secrets
+import shlex
 import shutil
 import socket
 import subprocess
@@ -44,6 +45,10 @@ ADGUARD_CREDS = Path(os.environ.get("PI4_NOC_ADGUARD_CREDS", "/home/pi4/.adguard
 LAN_IP = os.environ.get("PI4_NOC_LAN_IP", "192.168.0.101")
 PI5_IP = os.environ.get("PI4_NOC_PI5_IP", "192.168.0.94")
 PI5_SSH_TARGET = os.environ.get("PI4_NOC_PI5_SSH_TARGET", f"pi5@{PI5_IP}")
+PI5_PORTFOLIO_HEALTH_URL = os.environ.get(
+    "PI4_NOC_PI5_PORTFOLIO_HEALTH_URL",
+    "https://raspberrypi5.tail83be27.ts.net/api/health",
+)
 ROUTER_IP = os.environ.get("PI4_NOC_ROUTER_IP", "192.168.0.1")
 ROUTER_NAME = os.environ.get("PI4_NOC_ROUTER_NAME", "TP-Link Archer BE400")
 SPEED_TEST_URL = os.environ.get("PI4_NOC_SPEED_TEST_URL", "https://speed.cloudflare.com/__down?bytes=1000000")
@@ -55,7 +60,10 @@ NETBIOS_NAME_LOOKUPS = os.environ.get("PI4_NOC_NETBIOS_NAMES", "0").lower() in {
 AUTH_USER = os.environ.get("PI4_NOC_AUTH_USER", "pi4")
 AUTH_SERVICE = os.environ.get("PI4_NOC_AUTH_SERVICE", "login")
 SESSION_SECRET_FILE = Path(os.environ.get("PI4_NOC_SESSION_SECRET_FILE", "/etc/pi4-noc/session-secret"))
+BOOT_STATE_FILE = Path(os.environ.get("PI4_NOC_BOOT_STATE_FILE", "/var/lib/pi4-boot-state/state.json"))
+BOOT_ID_FILE = Path(os.environ.get("PI4_NOC_BOOT_ID_FILE", "/proc/sys/kernel/random/boot_id"))
 HISTORY_LEN = 60
+DATA_FS_UUID = os.environ.get("PI4_NOC_DATA_FS_UUID", "b0a1a356-3c0e-4f68-9c80-3379f662b4bc")
 
 DEFAULT_APS = [
     {
@@ -107,6 +115,8 @@ OPS_CHECK_CONFIG = {
     "five-minute": [
         {"id": "gateway", "label": "Gateway reachability", "host": "Router", "kind": "ping", "target": ROUTER_IP, "failureStatus": "fail"},
         {"id": "dns-resolver", "label": "DNS resolver", "host": "Pi4", "kind": "dns", "target": "example.com", "failureStatus": "fail"},
+        {"id": "pi4-power-throttle", "label": "Pi4 power/throttle", "host": "Pi4", "kind": "raspi-throttle", "failureStatus": "warn"},
+        {"id": "pi4-boot-state", "label": "Pi4 clean-shutdown state", "host": "Pi4", "kind": "boot-state", "path": str(BOOT_STATE_FILE), "failureStatus": "fail"},
         {"id": "wan-http", "label": "WAN HTTPS reachability", "host": "Internet", "kind": "http", "url": "https://one.one.one.one/cdn-cgi/trace", "timeout": 2.5, "failureStatus": "warn"},
         {"id": "wan-latency", "label": "WAN endpoint latency", "host": "Internet", "kind": "multi-http", "urls": ["https://one.one.one.one/cdn-cgi/trace", "https://www.google.com/generate_204", "https://cloudflare.com/cdn-cgi/trace"], "timeout": 4, "maxAvgMs": 1000, "failureStatus": "warn"},
         {"id": "dns-latency", "label": "DNS latency", "host": "Pi4", "kind": "multi-dns", "targets": ["one.one.one.one", "google.com", "github.com"], "maxAvgMs": 500, "failureStatus": "warn"},
@@ -118,17 +128,26 @@ OPS_CHECK_CONFIG = {
         {"id": "mission-control", "label": "Mission Control", "host": "Pi5 k3s", "kind": "http", "url": f"http://{PI5_IP}:8088/api/health", "jsonField": "status", "jsonEquals": "ok", "failureStatus": "fail"},
         {"id": "eagleeye", "label": "EagleEye", "host": "Pi5 k3s", "kind": "http", "url": f"http://{PI5_IP}:8098/healthz", "jsonField": "status", "jsonEquals": "ok", "failureStatus": "warn"},
         {"id": "programs", "label": "CabreraPrograms", "host": "Pi5", "kind": "http", "url": f"http://{PI5_IP}:8096/api/session", "expectJson": True, "failureStatus": "warn"},
-        {"id": "portfolio-api", "label": "Portfolio API", "host": "Pi5", "kind": "http", "url": f"http://{PI5_IP}:8099/api/health", "jsonField": "ok", "jsonEquals": True, "failureStatus": "fail"},
+        {"id": "portfolio-api", "label": "Portfolio API", "host": "Pi5", "kind": "http", "url": PI5_PORTFOLIO_HEALTH_URL, "jsonField": "ok", "jsonEquals": True, "failureStatus": "fail"},
     ],
     "hourly": [
         {"id": "wan-speed", "label": "WAN speed sample", "host": "Internet", "kind": "speed-lite", "url": SPEED_TEST_URL, "timeout": 4, "minMbps": SPEED_WARN_MBPS, "failureStatus": "warn"},
         {"id": "k3s-release", "label": "k3s latest release", "host": "GitHub", "kind": "github-release", "repo": "k3s-io/k3s", "failureStatus": "warn"},
         {"id": "hourly-backups", "label": "Backup verification", "host": "Pi4", "kind": "backup-recent", "path": "/mnt/ssd/backups", "maxAgeHours": 72, "verifyContents": True, "failureStatus": "warn"},
+        {"id": "offhost-backups", "label": "Off-host backup freshness", "host": "Pi5", "kind": "remote-backup-recent", "sshTarget": PI5_SSH_TARGET, "path": "/home/pi5/backups/pi4", "pattern": "pi4-backup-*.tgz", "maxAgeHours": 72, "failureStatus": "warn"},
+        {"id": "offhost-backup-parity", "label": "Off-host backup parity", "host": "Pi4/Pi5", "kind": "remote-backup-parity", "sshTarget": PI5_SSH_TARGET, "localPath": "/mnt/ssd/backups/pi4", "remotePath": "/home/pi5/backups/pi4", "pattern": "pi4-backup-*.tgz*", "failureStatus": "warn"},
         {"id": "backup-artifacts", "label": "Backup artifact integrity", "host": "Pi4", "kind": "backup-artifacts", "path": "/mnt/ssd/backups", "maxArchives": 8, "maxChecksums": 8, "failureStatus": "warn"},
         {"id": "pi4-k3s-node", "label": "Pi4 k3s node", "host": "Pi4 k3s", "kind": "k3s-local", "scope": "nodes", "failureStatus": "fail"},
         {"id": "pi4-k3s-apps", "label": "Pi4 k3s apps", "host": "Pi4 k3s", "kind": "k3s-local", "scope": "workloads", "workloads": ["grid", "uptime-kuma", "local-registry", "homelab-smoke"], "failureStatus": "warn"},
+        {"id": "pi4-k3s-resources", "label": "Pi4 k3s resource guardrails", "host": "Pi4 k3s", "kind": "k3s-resources", "namespace": "homelab", "workloads": ["grid", "uptime-kuma", "local-registry", "homelab-smoke"], "failureStatus": "warn"},
+        {"id": "pi4-port-drift", "label": "Pi4 open-port drift", "host": "Pi4", "kind": "port-drift", "allow": ["tcp/22", "tcp/53", "tcp/80", "tcp/139", "tcp/445", "tcp/6443", "tcp/8080", "tcp/10250", "udp/53", "udp/137", "udp/138", "udp/8472", "udp/41641", "udp/5353"], "ignoreUdpAbove": 20000, "failureStatus": "warn"},
         {"id": "pi5-k3s-node", "label": "Pi5 k3s node", "host": "Pi5 k3s", "kind": "ssh-k3s", "sshTarget": PI5_SSH_TARGET, "scope": "nodes", "failureStatus": "fail"},
         {"id": "pi5-k3s-apps", "label": "Pi5 k3s apps", "host": "Pi5 k3s", "kind": "ssh-k3s", "sshTarget": PI5_SSH_TARGET, "scope": "workloads", "workloads": ["coinbot", "coinbot-website", "eagleeye"], "failureStatus": "warn"},
+        {"id": "pi5-systemd-failures", "label": "Pi5 failed units", "host": "Pi5", "kind": "ssh-systemd-failed", "sshTarget": PI5_SSH_TARGET, "failureStatus": "fail"},
+        {"id": "pi5-portfolio-sync-timer", "label": "Pi5 Portfolio sync timer", "host": "Pi5", "kind": "ssh-systemd-timer", "sshTarget": PI5_SSH_TARGET, "unit": "cabrera-portfolio-manual-sync.timer", "serviceUnit": "cabrera-portfolio-manual-sync.service", "maxLastHours": 36, "failureStatus": "warn"},
+        {"id": "pi5-tailscale", "label": "Pi5 Tailscale", "host": "Pi5", "kind": "ssh-systemd-unit", "sshTarget": PI5_SSH_TARGET, "unit": "tailscaled.service", "failureStatus": "fail"},
+        {"id": "pi5-system-headroom", "label": "Pi5 system headroom", "host": "Pi5", "kind": "ssh-pi-health", "sshTarget": PI5_SSH_TARGET, "path": "/", "maxDiskPct": 85, "maxTempC": 70, "failureStatus": "warn"},
+        {"id": "pi5-package-upgrades", "label": "Pi5 package upgrades", "host": "Pi5", "kind": "ssh-apt-upgrades", "sshTarget": PI5_SSH_TARGET, "warnCount": 25, "failureStatus": "warn"},
         {"id": "grid-index", "label": "GRID index", "host": "Pi4 k3s", "kind": "http", "url": f"http://{LAN_IP}:8090/api/stats", "jsonField": "schema_version", "jsonEquals": 3, "failureStatus": "warn"},
         {"id": "local-registry", "label": "Local registry", "host": "Pi4 k3s", "kind": "http", "url": f"http://{LAN_IP}:5000/v2/", "failureStatus": "warn"},
         {"id": "portfolio-web", "label": "Portfolio web", "host": "Pi5", "kind": "http", "url": f"http://{PI5_IP}:8080/", "failureStatus": "fail"},
@@ -142,11 +161,20 @@ OPS_CHECK_CONFIG = {
         {"id": "log2ram-flush", "label": "log2ram daily flush", "host": "Pi4", "kind": "systemd-timer", "unit": "log2ram-daily.timer", "maxLastHours": 36, "failureStatus": "warn"},
         {"id": "tmpfiles-clean", "label": "Temp/log cleanup timer", "host": "Pi4", "kind": "systemd-timer", "unit": "systemd-tmpfiles-clean.timer", "maxLastHours": 48, "failureStatus": "warn"},
         {"id": "dpkg-backup", "label": "Package DB backup timer", "host": "Pi4", "kind": "systemd-timer", "unit": "dpkg-db-backup.timer", "maxLastHours": 36, "failureStatus": "warn"},
-        {"id": "ssd-trim", "label": "SSD trim timer", "host": "Pi4", "kind": "systemd-timer", "unit": "fstrim.timer", "maxLastHours": 192, "failureStatus": "warn"},
-        {"id": "kernel-io-health", "label": "Kernel storage errors", "host": "Pi4", "kind": "journal-pattern", "since": "24 hours ago", "patterns": ["I/O error", "EXT4-fs error", "Buffer I/O", "blk_update_request", "mmc.*error", "sda.*error", "filesystem.*error", "read-only file system"], "failureStatus": "warn"},
+        {"id": "pi4-backup-timer", "label": "Pi4 backup timer", "host": "Pi4", "kind": "systemd-timer", "unit": "pi4-backup.timer", "failureStatus": "warn"},
+        {"id": "restore-drill-timer", "label": "Restore drill timer", "host": "Pi4", "kind": "systemd-timer", "unit": "pi4-restore-drill.timer", "failureStatus": "warn"},
+        {"id": "restore-drill-state", "label": "Restore drill freshness", "host": "Pi4/Pi5", "kind": "file-freshness", "path": "/var/lib/pi4-backup/last-restore-drill.json", "maxAgeHours": 192, "jsonField": "status", "jsonEquals": "ok", "failureStatus": "warn"},
+        {"id": "backup-service-result", "label": "Pi4 backup result", "host": "Pi4", "kind": "systemd-service-result", "unit": "pi4-backup.service", "allowNever": True, "failureStatus": "fail"},
+        {"id": "restore-drill-service-result", "label": "Restore drill result", "host": "Pi4", "kind": "systemd-service-result", "unit": "pi4-restore-drill.service", "allowNever": True, "failureStatus": "fail"},
+        {"id": "filesystem-trim", "label": "Filesystem trim timer", "host": "Pi4", "kind": "systemd-timer", "unit": "fstrim.timer", "maxLastHours": 192, "failureStatus": "warn"},
+        {"id": "kernel-io-health", "label": "Kernel storage/power errors", "host": "Pi4", "kind": "journal-pattern", "since": "24 hours ago", "patterns": ["I/O error", "EXT4-fs error", "Buffer I/O", "blk_update_request", "mmc.*error", "sda.*error", "filesystem.*error", "read-only file system", "Undervoltage detected"], "failureStatus": "warn"},
         {"id": "root-disk", "label": "Root disk headroom", "host": "Pi4", "kind": "disk", "path": "/", "maxPct": 85, "maxInodePct": 85, "failureStatus": "warn"},
-        {"id": "ssd-disk", "label": "SSD headroom", "host": "Pi4", "kind": "disk", "path": "/mnt/ssd", "maxPct": 85, "maxInodePct": 85, "failureStatus": "warn"},
-        {"id": "brain-mount", "label": "GRID brain mount", "host": "Pi4", "kind": "mount", "path": "/mnt/nas/brain", "failureStatus": "fail"},
+        {"id": "data-hdd-disk", "label": "Data HDD headroom", "host": "Pi4", "kind": "disk", "path": "/mnt/ssd", "maxPct": 85, "maxInodePct": 85, "failureStatus": "warn"},
+        {"id": "data-hdd-mount", "label": "Data HDD mount integrity", "host": "Pi4", "kind": "mount", "path": "/mnt/ssd", "expectedUuid": "b0a1a356-3c0e-4f68-9c80-3379f662b4bc", "expectedFstype": "ext4", "requireReadWrite": True, "failureStatus": "fail"},
+        {"id": "brain-mount", "label": "GRID brain mount", "host": "Pi4", "kind": "mount", "path": "/mnt/nas/brain", "expectedUuid": "b0a1a356-3c0e-4f68-9c80-3379f662b4bc", "expectedFstype": "ext4", "requireReadWrite": True, "failureStatus": "fail"},
+        {"id": "data-hdd-smart", "label": "Data HDD SMART health", "host": "Pi4", "kind": "smart", "device": "/dev/sda", "maxTempC": 50, "unavailableStatus": "warn", "failureStatus": "fail"},
+        {"id": "data-hdd-smart-short-timer", "label": "Data HDD short SMART test timer", "host": "Pi4", "kind": "systemd-timer", "unit": "pi4-smart-short.timer", "failureStatus": "warn"},
+        {"id": "data-hdd-smart-long-timer", "label": "Data HDD long SMART test timer", "host": "Pi4", "kind": "systemd-timer", "unit": "pi4-smart-long.timer", "failureStatus": "warn"},
         {"id": "brain-freshness", "label": "GRID brain freshness", "host": "Pi4", "kind": "path-freshness", "path": "/mnt/nas/brain", "maxAgeHours": 168, "recursive": True, "failureStatus": "warn"},
         {"id": "brain-vault-parity", "label": "GRID vault path parity", "host": "Pi4", "kind": "path-parity", "source": "/mnt/nas/brain", "target": "/mnt/ssd/nas/brain", "pattern": "*.md", "maxHashFiles": 50, "failureStatus": "warn"},
         {"id": "grid-vault-sync", "label": "GRID vault/index sync", "host": "Pi4 k3s", "kind": "grid-sync", "url": f"http://{LAN_IP}:8090/api/stats", "minNotes": 1, "maxScanAgeMinutes": 30, "failureStatus": "warn"},
@@ -163,6 +191,26 @@ MAC_RE = re.compile(r"^(?:[0-9a-f]{2}[:-]){5}[0-9a-f]{2}$", re.I)
 AUTH_EXEMPT_API_PATHS = {"/api/session", "/api/login", "/api/logout"}
 LOGIN_FAILURES: dict[str, deque[float]] = {}
 LOGIN_LOCK = threading.RLock()
+THROTTLE_CURRENT_FLAGS = {
+    0: "under-voltage active",
+    1: "frequency cap active",
+    2: "throttling active",
+    3: "soft temperature limit active",
+}
+THROTTLE_STICKY_FLAGS = {
+    16: "under-voltage occurred",
+    17: "frequency cap occurred",
+    18: "throttling occurred",
+    19: "soft temperature limit occurred",
+}
+IGNORED_LISTENER_NETWORKS = [
+    ipaddress.ip_network("127.0.0.0/8"),
+    ipaddress.ip_network("::1/128"),
+    ipaddress.ip_network("10.42.0.0/16"),
+    ipaddress.ip_network("10.43.0.0/16"),
+    ipaddress.ip_network("100.64.0.0/10"),
+    ipaddress.ip_network("fc00::/7"),
+]
 
 
 def load_session_secret() -> str:
@@ -489,6 +537,37 @@ def local_ip() -> str:
     except Exception:
         pass
     return LAN_IP
+
+
+def data_drive_metadata() -> dict:
+    try:
+        partition = (Path("/dev/disk/by-uuid") / DATA_FS_UUID).resolve(strict=True)
+        sys_partition = (Path("/sys/class/block") / partition.name).resolve(strict=True)
+        device = sys_partition.parent.name
+        if not re.fullmatch(r"[A-Za-z0-9_-]+", device):
+            raise ValueError("invalid parent block device")
+        sys_block = Path("/sys/class/block") / device
+        model = (sys_block / "device/model").read_text(encoding="utf-8").strip()
+        rotational = (sys_block / "queue/rotational").read_text(encoding="utf-8").strip() == "1"
+        transport = "USB" if "/usb" in str((sys_block / "device").resolve()).lower() else "unknown"
+    except Exception:
+        return {
+            "label": "Data Drive",
+            "media": "unknown",
+            "model": "unknown",
+            "device": f"UUID={DATA_FS_UUID}",
+            "rotational": None,
+            "transport": "unknown",
+        }
+    media = "HDD" if rotational else "SSD"
+    return {
+        "label": f"Data {media}",
+        "media": media,
+        "model": model,
+        "device": str(partition),
+        "rotational": rotational,
+        "transport": transport,
+    }
 
 
 def service_show(unit: str) -> dict[str, str]:
@@ -864,6 +943,7 @@ class DashboardCache:
         self.prev_net = psutil.net_io_counters()
         self.prev_disk = psutil.disk_io_counters()
         self.prev_adguard = None
+        self.data_drive = data_drive_metadata()
         self.adguard_client_hints: dict[str, dict] = {}
         self.name_cache: dict[str, dict] = {}
         self.operations_last_run: dict[str, float] = {}
@@ -1033,6 +1113,7 @@ class DashboardCache:
         return {
             "root": {"used": root_used, "total": root_gb, "fs": "ext4", "mount": "/"},
             "ssd": {
+                **self.data_drive,
                 "used": ssd_used,
                 "total": ssd_gb,
                 "fs": "ext4",
@@ -1061,7 +1142,7 @@ class DashboardCache:
             self.kpi("cpu", "CPU", "cpu", host.get("cpuPct", 0), "%", "ok" if host.get("cpuPct", 0) < 85 else "warn", self.histories["cpu"]),
             self.kpi("ram", "Memory", "ram", host.get("ramPct", 0), "%", "ok" if host.get("ramPct", 0) < 85 else "warn", self.histories["ram"], f"{host.get('ramUsed', 0)} / {host.get('ramTotal', 0)} MB"),
             self.kpi("temp", "Temperature", "thermo", host.get("tempC", 0), "°C", "ok" if host.get("tempC", 0) < 70 else "warn", self.histories["temp"]),
-            self.kpi("ssd", "SSD Used", "disk", round(ssd_pct, 1), "%", "ok" if ssd_pct < 80 else "warn", self.histories["ssdPct"], f"{ssd.get('used', 0)} / {ssd.get('total', 0)} GB"),
+            self.kpi("ssd", f"{ssd.get('label', 'Data HDD')} Used", "disk", round(ssd_pct, 1), "%", "ok" if ssd_pct < 80 else "warn", self.histories["ssdPct"], f"{ssd.get('used', 0)} / {ssd.get('total', 0)} GB"),
             self.kpi("dns", "DNS / min", "dns", round(self.histories["dnsPerMin"][-1]), "", "ok", self.histories["dnsPerMin"]),
         ]
 
@@ -1272,22 +1353,50 @@ class DashboardCache:
                 return self.dns_operation_check(check, started)
             if kind == "multi-dns":
                 return self.multi_dns_operation_check(check, started)
+            if kind == "raspi-throttle":
+                return self.raspi_throttle_operation_check(check, started)
+            if kind == "boot-state":
+                return self.boot_state_operation_check(check, started)
             if kind == "k3s-local":
                 return self.k3s_operation_check(check, started)
             if kind == "ssh-k3s":
                 return self.ssh_k3s_operation_check(check, started)
+            if kind == "ssh-systemd-failed":
+                return self.ssh_systemd_failed_operation_check(check, started)
+            if kind == "ssh-systemd-unit":
+                return self.ssh_systemd_unit_operation_check(check, started)
+            if kind == "ssh-systemd-timer":
+                return self.ssh_systemd_timer_operation_check(check, started)
+            if kind == "ssh-pi-health":
+                return self.ssh_pi_health_operation_check(check, started)
+            if kind == "ssh-apt-upgrades":
+                return self.ssh_apt_upgrades_operation_check(check, started)
+            if kind == "k3s-resources":
+                return self.k3s_resources_operation_check(check, started)
             if kind == "disk":
                 return self.disk_operation_check(check, started)
             if kind == "mount":
                 return self.mount_operation_check(check, started)
+            if kind == "smart":
+                return self.smart_operation_check(check, started)
+            if kind == "port-drift":
+                return self.port_drift_operation_check(check, started)
             if kind == "systemd-timer":
                 return self.timer_operation_check(check, started)
+            if kind == "systemd-service-result":
+                return self.systemd_service_result_operation_check(check, started)
             if kind == "backup-recent":
                 return self.backup_operation_check(check, started)
+            if kind == "remote-backup-recent":
+                return self.remote_backup_operation_check(check, started)
+            if kind == "remote-backup-parity":
+                return self.remote_backup_parity_operation_check(check, started)
             if kind == "backup-artifacts":
                 return self.backup_artifacts_operation_check(check, started)
             if kind == "directory-retention":
                 return self.directory_retention_operation_check(check, started)
+            if kind == "file-freshness":
+                return self.file_freshness_operation_check(check, started)
             if kind == "path-freshness":
                 return self.path_freshness_operation_check(check, started)
             if kind == "path-parity":
@@ -1384,6 +1493,100 @@ class DashboardCache:
             message = f"{message}, {len(failures)} failed"
         return operation_check_result(check, "ok" if ok else check.get("failureStatus", "warn"), message, started, avgMs=round(avg_ms, 1) if avg_ms is not None else None, failures=len(failures))
 
+    def raspi_throttle_operation_check(self, check: dict, started: float) -> dict:
+        proc = run_cmd(["/usr/bin/vcgencmd", "get_throttled"], timeout=3)
+        if proc.returncode != 0:
+            return operation_check_result(check, check.get("failureStatus", "warn"), proc_output(proc) or "vcgencmd failed", started)
+        text = (proc.stdout or "").strip()
+        match = re.search(r"0x[0-9a-fA-F]+", text)
+        if not match:
+            return operation_check_result(check, check.get("failureStatus", "warn"), text or "unknown throttle status", started)
+        value = int(match.group(0), 16)
+        current = [label for bit, label in THROTTLE_CURRENT_FLAGS.items() if value & (1 << bit)]
+        sticky = [label for bit, label in THROTTLE_STICKY_FLAGS.items() if value & (1 << bit)]
+        if current:
+            status = "fail"
+            message = ", ".join(current)
+        elif sticky:
+            status = check.get("failureStatus", "warn")
+            message = ", ".join(sticky)
+        else:
+            status = "ok"
+            message = "no throttling flags"
+        return operation_check_result(check, status, f"{match.group(0)}: {message}", started, throttleHex=match.group(0), currentFlags=current, stickyFlags=sticky)
+
+    def boot_state_operation_check(self, check: dict, started: float) -> dict:
+        state_path = Path(check.get("path") or BOOT_STATE_FILE)
+        boot_id_path = Path(check.get("bootIdPath") or BOOT_ID_FILE)
+        if not state_path.is_file():
+            return operation_check_result(
+                check,
+                "warn",
+                "boot tracking is not initialized",
+                started,
+                trackingState="missing",
+            )
+        try:
+            state = json.loads(state_path.read_text(encoding="utf-8"))
+            current_boot_id = boot_id_path.read_text(encoding="utf-8").strip()
+        except Exception as exc:
+            return operation_check_result(check, check.get("failureStatus", "fail"), f"boot state unreadable: {exc}", started)
+        if not isinstance(state, dict) or not current_boot_id:
+            return operation_check_result(check, check.get("failureStatus", "fail"), "boot state is invalid", started)
+
+        tracked_boot_id = str(state.get("currentBootId") or "")
+        previous_boot_id = str(state.get("previousBootId") or "")
+        previous_clean = state.get("previousBootClean")
+        unclean_count = int(state.get("uncleanBootCount") or 0)
+        if tracked_boot_id != current_boot_id:
+            return operation_check_result(
+                check,
+                check.get("failureStatus", "fail"),
+                "boot tracker does not match the running boot",
+                started,
+                trackingState="stale",
+                uncleanBootCount=unclean_count,
+            )
+        if state.get("currentBootClean") is True:
+            return operation_check_result(
+                check,
+                check.get("failureStatus", "fail"),
+                "running boot is already marked clean",
+                started,
+                trackingState="invalid",
+                uncleanBootCount=unclean_count,
+            )
+        if previous_clean is False:
+            previous_label = previous_boot_id[:8] if previous_boot_id else "unknown"
+            return operation_check_result(
+                check,
+                check.get("failureStatus", "fail"),
+                f"previous boot {previous_label} ended uncleanly",
+                started,
+                trackingState="unclean",
+                previousBootClean=False,
+                uncleanBootCount=unclean_count,
+            )
+        if previous_clean is None:
+            return operation_check_result(
+                check,
+                "warn",
+                "previous boot state is unknown (initial baseline)",
+                started,
+                trackingState="baseline",
+                previousBootClean=None,
+                uncleanBootCount=unclean_count,
+            )
+        return operation_check_result(
+            check,
+            "ok",
+            "previous boot shut down cleanly; current boot is tracked",
+            started,
+            trackingState="clean",
+            previousBootClean=True,
+            uncleanBootCount=unclean_count,
+        )
+
     def k3s_operation_check(self, check: dict, started: float) -> dict:
         with self.lock:
             k3s = copy.deepcopy(self.snapshot_data.get("K3S", {}))
@@ -1397,13 +1600,66 @@ class DashboardCache:
             workload for workload in k3s.get("workloads", [])
             if not targets or workload.get("name") in targets
         ]
+        present = {str(workload.get("name") or "") for workload in workloads}
+        missing_targets = sorted(targets - present)
         degraded = [
             workload for workload in workloads
             if int(workload.get("ready") or 0) < int(workload.get("desired") or 1)
         ]
-        ok = bool(workloads) and not degraded
-        message = f"{len(workloads) - len(degraded)}/{len(workloads)} workloads ready" if workloads else "awaiting workload data"
-        return operation_check_result(check, "ok" if ok else check.get("failureStatus", "warn"), message, started)
+        expected_count = len(targets) if targets else len(workloads)
+        ready_count = len(workloads) - len(degraded)
+        ok = bool(workloads) and not degraded and not missing_targets
+        message = f"{ready_count}/{expected_count} workloads ready" if expected_count else "awaiting workload data"
+        if missing_targets:
+            message = f"{message}; missing {', '.join(missing_targets)}"
+        return operation_check_result(
+            check,
+            "ok" if ok else check.get("failureStatus", "warn"),
+            message,
+            started,
+            missingWorkloads=missing_targets,
+        )
+
+    def k3s_resources_operation_check(self, check: dict, started: float) -> dict:
+        namespace = check.get("namespace", "homelab")
+        targets = set(check.get("workloads", []))
+        proc = run_cmd(["/usr/local/bin/kubectl", "-n", namespace, "get", "deploy", "-o", "json"], timeout=float(check.get("timeout", 10)))
+        if proc.returncode != 0:
+            return operation_check_result(check, check.get("failureStatus", "warn"), proc_output(proc) or "kubectl resources check failed", started)
+        data = json.loads(proc.stdout or "{}")
+        inspected = 0
+        inspected_names = set()
+        missing = []
+        for item in data.get("items", []):
+            name = item.get("metadata", {}).get("name", "unknown")
+            if targets and name not in targets:
+                continue
+            inspected += 1
+            inspected_names.add(name)
+            for container in item.get("spec", {}).get("template", {}).get("spec", {}).get("containers", []):
+                cname = container.get("name", "container")
+                resources = container.get("resources") or {}
+                requests = resources.get("requests") or {}
+                limits = resources.get("limits") or {}
+                for key in ("cpu", "memory"):
+                    if not requests.get(key):
+                        missing.append(f"{name}/{cname} request.{key}")
+                    if not limits.get(key):
+                        missing.append(f"{name}/{cname} limit.{key}")
+        missing_deployments = sorted(targets - inspected_names)
+        missing.extend(f"{name} deployment missing" for name in missing_deployments)
+        ok = inspected > 0 and not missing
+        message = f"{inspected} deployments guarded" if ok else f"{len(missing)} missing guardrails"
+        return operation_check_result(
+            check,
+            "ok" if ok else check.get("failureStatus", "warn"),
+            message,
+            started,
+            inspected=inspected,
+            missing=missing[:8],
+            missingCount=len(missing),
+            missingWorkloads=missing_deployments,
+        )
 
     def ssh_k3s_operation_check(self, check: dict, started: float) -> dict:
         base = [
@@ -1451,10 +1707,169 @@ class DashboardCache:
                 desired = int(spec.get("replicas") or 1)
                 ready = int(status.get("readyReplicas") or 0)
             workloads.append({"name": name, "ready": ready, "desired": desired})
+        present = {str(workload.get("name") or "") for workload in workloads}
+        missing_targets = sorted(targets - present)
         degraded = [workload for workload in workloads if workload["ready"] < workload["desired"]]
-        ok = bool(workloads) and not degraded
-        message = f"{len(workloads) - len(degraded)}/{len(workloads)} workloads ready" if workloads else "awaiting workload data"
-        return operation_check_result(check, "ok" if ok else check.get("failureStatus", "warn"), message, started)
+        expected_count = len(targets) if targets else len(workloads)
+        ready_count = len(workloads) - len(degraded)
+        ok = bool(workloads) and not degraded and not missing_targets
+        message = f"{ready_count}/{expected_count} workloads ready" if expected_count else "awaiting workload data"
+        if missing_targets:
+            message = f"{message}; missing {', '.join(missing_targets)}"
+        return operation_check_result(
+            check,
+            "ok" if ok else check.get("failureStatus", "warn"),
+            message,
+            started,
+            missingWorkloads=missing_targets,
+        )
+
+    def ssh_run(self, check: dict, command: str, timeout: float | None = None) -> subprocess.CompletedProcess:
+        return run_cmd(
+            [
+                "/usr/bin/ssh",
+                "-o",
+                "BatchMode=yes",
+                "-o",
+                f"ConnectTimeout={int(check.get('connectTimeout', 4))}",
+                check["sshTarget"],
+                f"bash -lc {shlex.quote(command)}",
+            ],
+            timeout=timeout if timeout is not None else float(check.get("timeout", 5)),
+        )
+
+    def ssh_systemd_failed_operation_check(self, check: dict, started: float) -> dict:
+        proc = self.ssh_run(check, "systemctl --failed --no-legend --plain || true", timeout=float(check.get("timeout", 5)))
+        if proc.returncode != 0:
+            return operation_check_result(check, check.get("failureStatus", "fail"), proc_output(proc) or "failed-unit check failed", started)
+        units = []
+        for line in (proc.stdout or "").splitlines():
+            parts = line.split()
+            if parts:
+                units.append(parts[0])
+        ignored = set(check.get("ignoreUnits", []))
+        failed = [unit for unit in units if unit not in ignored]
+        ok = not failed
+        message = "no failed units" if ok else f"{len(failed)} failed: {', '.join(failed[:6])}"
+        return operation_check_result(check, "ok" if ok else check.get("failureStatus", "fail"), message, started, failedUnits=failed)
+
+    def ssh_systemd_unit_operation_check(self, check: dict, started: float) -> dict:
+        unit = check["unit"]
+        proc = self.ssh_run(check, f"systemctl is-active {shlex.quote(unit)}", timeout=float(check.get("timeout", 5)))
+        state = (proc.stdout or "").strip() or "unknown"
+        ok = proc.returncode == 0 and state == "active"
+        return operation_check_result(check, "ok" if ok else check.get("failureStatus", "fail"), state, started, unit=unit, activeState=state)
+
+    def ssh_systemd_timer_operation_check(self, check: dict, started: float) -> dict:
+        unit = check["unit"]
+        service_unit = check.get("serviceUnit")
+        command = [
+            f"systemctl show {shlex.quote(unit)} -p ActiveState -p LastTriggerUSec -p NextElapseUSecRealtime",
+        ]
+        if service_unit:
+            command.append(f"printf 'ServiceFailed='; systemctl is-failed {shlex.quote(service_unit)} || true")
+        proc = self.ssh_run(check, "\n".join(command), timeout=float(check.get("timeout", 5)))
+        if proc.returncode != 0:
+            return operation_check_result(check, check.get("failureStatus", "warn"), proc_output(proc) or "remote timer check failed", started, unit=unit)
+        fields = {}
+        for line in (proc.stdout or "").splitlines():
+            if "=" in line:
+                key, value = line.split("=", 1)
+                fields[key] = value.strip()
+        state = fields.get("ActiveState") or "unknown"
+        service_failed = fields.get("ServiceFailed") == "failed"
+        last_ts = parse_systemd_local_ts(fields.get("LastTriggerUSec") or "")
+        last_age_hours = (time.time() - last_ts) / 3600 if last_ts else None
+        ok = state == "active" and not service_failed
+        max_last = check.get("maxLastHours")
+        if max_last is not None:
+            ok = ok and last_age_hours is not None and last_age_hours <= float(max_last)
+        if last_age_hours is None:
+            message = state
+        else:
+            message = f"{state}, last {last_age_hours:.1f}h ago"
+        if service_failed:
+            message = f"{message}, {service_unit} failed"
+        return operation_check_result(
+            check,
+            "ok" if ok else check.get("failureStatus", "warn"),
+            message,
+            started,
+            unit=unit,
+            serviceUnit=service_unit,
+            lastAgeHours=round(last_age_hours, 1) if last_age_hours is not None else None,
+            serviceFailed=service_failed,
+        )
+
+    def ssh_pi_health_operation_check(self, check: dict, started: float) -> dict:
+        path = shlex.quote(check.get("path", "/"))
+        command = f"""
+disk_pct=$(df -P {path} | awk 'NR==2 {{gsub("%","",$5); print $5}}')
+disk_avail=$(df -Ph {path} | awk 'NR==2 {{print $4}}')
+mem_avail=$(free -m | awk '/Mem:/ {{print $7}}')
+temp_c=$(vcgencmd measure_temp 2>/dev/null | sed -E 's/.*=([0-9.]+).*/\\1/' || true)
+throttle=$(vcgencmd get_throttled 2>/dev/null | sed 's/^throttled=//' || true)
+printf 'disk_pct=%s\\n' "$disk_pct"
+printf 'disk_avail=%s\\n' "$disk_avail"
+printf 'mem_avail_mb=%s\\n' "$mem_avail"
+printf 'temp_c=%s\\n' "$temp_c"
+printf 'throttle=%s\\n' "$throttle"
+"""
+        proc = self.ssh_run(check, command, timeout=float(check.get("timeout", 5)))
+        if proc.returncode != 0:
+            return operation_check_result(check, check.get("failureStatus", "warn"), proc_output(proc) or "remote health check failed", started)
+        fields = {}
+        for line in (proc.stdout or "").splitlines():
+            if "=" in line:
+                key, value = line.split("=", 1)
+                fields[key] = value.strip()
+        disk_pct = float(fields.get("disk_pct") or 0)
+        mem_avail_mb = float(fields.get("mem_avail_mb") or 0)
+        temp_c = float(fields.get("temp_c") or 0)
+        throttle_hex = fields.get("throttle") or "0x0"
+        try:
+            throttle_value = int(throttle_hex, 16)
+        except ValueError:
+            throttle_value = 0
+        max_disk = float(check.get("maxDiskPct", 85))
+        max_temp = float(check.get("maxTempC", 70))
+        min_mem = float(check.get("minMemAvailableMb", 512))
+        issues = []
+        if disk_pct >= max_disk:
+            issues.append(f"disk {disk_pct:.1f}%")
+        if temp_c >= max_temp:
+            issues.append(f"temp {temp_c:.1f}C")
+        if mem_avail_mb < min_mem:
+            issues.append(f"available memory {mem_avail_mb:.0f} MB")
+        if throttle_value != 0:
+            issues.append(f"throttle {throttle_hex}")
+        ok = not issues
+        message = f"disk {disk_pct:.1f}%, {fields.get('disk_avail', '?')} free, temp {temp_c:.1f}C, mem {mem_avail_mb:.0f} MB, throttle {throttle_hex}"
+        if issues:
+            message = f"{message}; {', '.join(issues)}"
+        return operation_check_result(
+            check,
+            "ok" if ok else check.get("failureStatus", "warn"),
+            message,
+            started,
+            diskPct=round(disk_pct, 1),
+            tempC=round(temp_c, 1),
+            memAvailableMb=round(mem_avail_mb),
+            throttleHex=throttle_hex,
+        )
+
+    def ssh_apt_upgrades_operation_check(self, check: dict, started: float) -> dict:
+        proc = self.ssh_run(check, "apt list --upgradable 2>/dev/null | tail -n +2 | wc -l", timeout=float(check.get("timeout", 6)))
+        if proc.returncode != 0:
+            return operation_check_result(check, check.get("failureStatus", "warn"), proc_output(proc) or "remote apt check failed", started)
+        try:
+            count = int((proc.stdout or "0").strip() or "0")
+        except ValueError:
+            count = 0
+        warn_count = int(check.get("warnCount", 25))
+        ok = count <= warn_count
+        message = f"{count} package upgrades available"
+        return operation_check_result(check, "ok" if ok else check.get("failureStatus", "warn"), message, started, upgradeCount=count, warnCount=warn_count)
 
     def disk_operation_check(self, check: dict, started: float) -> dict:
         path = Path(check["path"])
@@ -1498,9 +1913,211 @@ class DashboardCache:
         )
 
     def mount_operation_check(self, check: dict, started: float) -> dict:
-        proc = run_cmd(["/usr/bin/findmnt", check["path"]], timeout=3)
-        status = "ok" if proc.returncode == 0 else check.get("failureStatus", "fail")
-        return operation_check_result(check, status, "mounted" if proc.returncode == 0 else "mount not found", started)
+        proc = run_cmd(
+            ["/usr/bin/findmnt", "--target", check["path"], "-J", "-o", "TARGET,SOURCE,FSTYPE,OPTIONS,UUID"],
+            timeout=3,
+        )
+        if proc.returncode != 0:
+            return operation_check_result(check, check.get("failureStatus", "fail"), "mount not found", started)
+        try:
+            filesystems = (json.loads(proc.stdout or "{}").get("filesystems") or [])
+            mount = filesystems[0]
+        except Exception:
+            return operation_check_result(check, check.get("failureStatus", "fail"), "mount metadata is unreadable", started)
+
+        source = str(mount.get("source") or "")
+        fstype = str(mount.get("fstype") or "")
+        uuid = str(mount.get("uuid") or "")
+        options = {part.strip() for part in str(mount.get("options") or "").split(",") if part.strip()}
+        expected_source = check.get("expectedSource")
+        expected_sources = {str(item) for item in expected_source} if isinstance(expected_source, list) else {str(expected_source)} if expected_source else set()
+        expected_fstype = str(check.get("expectedFstype") or "")
+        expected_uuid = str(check.get("expectedUuid") or "")
+        issues = []
+        if expected_sources and source not in expected_sources:
+            issues.append(f"source {source or 'unknown'}")
+        if expected_fstype and fstype != expected_fstype:
+            issues.append(f"filesystem {fstype or 'unknown'}")
+        if expected_uuid and uuid != expected_uuid:
+            issues.append(f"UUID {uuid or 'unknown'}")
+        if check.get("requireReadWrite") and ("ro" in options or "rw" not in options):
+            issues.append("read-only")
+
+        ok = not issues
+        message = f"{source or 'unknown'}, {fstype or 'unknown'}, {'rw' if 'rw' in options and 'ro' not in options else 'ro'}"
+        if issues:
+            message = f"{message}; unexpected {', '.join(issues)}"
+        return operation_check_result(
+            check,
+            "ok" if ok else check.get("failureStatus", "fail"),
+            message,
+            started,
+            source=source,
+            fstype=fstype,
+            uuid=uuid,
+            readOnly="ro" in options or "rw" not in options,
+        )
+
+    def smart_operation_check(self, check: dict, started: float) -> dict:
+        data = run_privileged_json(["smart_health"], timeout=float(check.get("timeout", 25)), default=None)
+        if not isinstance(data, dict):
+            return operation_check_result(
+                check,
+                check.get("unavailableStatus", "warn"),
+                "SMART helper returned no usable data",
+                started,
+                smartAvailable=False,
+            )
+        meta = data.get("_pi4_noc") if isinstance(data.get("_pi4_noc"), dict) else {}
+        exit_status = meta.get("exitStatus")
+        if not meta.get("available"):
+            reason = str(meta.get("reason") or "SMART is unavailable")
+            return operation_check_result(
+                check,
+                check.get("unavailableStatus", "warn"),
+                reason,
+                started,
+                smartAvailable=False,
+                smartctlExitStatus=exit_status,
+            )
+
+        power_mode = data.get("power_mode")
+        if isinstance(power_mode, dict):
+            power_mode = power_mode.get("string") or power_mode.get("name")
+        power_mode_text = str(power_mode or "").strip().lower()
+        if power_mode_text in {"standby", "sleep", "sleeping"}:
+            return operation_check_result(
+                check,
+                "ok",
+                f"drive is {power_mode_text}; standby-safe SMART poll deferred",
+                started,
+                smartAvailable=True,
+                powerMode=power_mode_text,
+                smartctlExitStatus=exit_status,
+            )
+
+        attributes = {}
+        for row in nested_get(data, "ata_smart_attributes.table", []) or []:
+            attribute_id = safe_int(row.get("id"), -1)
+            raw = row.get("raw") if isinstance(row.get("raw"), dict) else {}
+            attributes[attribute_id] = safe_int(raw.get("value"), 0)
+
+        smart_passed = nested_get(data, "smart_status.passed")
+        temperature = safe_float(nested_get(data, "temperature.current"), attributes.get(194, 0))
+        reallocated = attributes.get(5, 0)
+        pending = attributes.get(197, 0)
+        offline_uncorrectable = attributes.get(198, 0)
+        interface_errors = attributes.get(199, 0)
+        error_count = safe_int(nested_get(data, "ata_smart_error_log.summary.count"), 0)
+        self_tests = nested_get(data, "ata_smart_self_test_log.standard.table", []) or []
+        latest_self_test = self_tests[0] if self_tests and isinstance(self_tests[0], dict) else {}
+        self_test_status = latest_self_test.get("status") if isinstance(latest_self_test.get("status"), dict) else {}
+        self_test_passed = self_test_status.get("passed")
+        self_test_label = str(self_test_status.get("string") or "")
+
+        failures = []
+        warnings = []
+        exit_value = safe_int(exit_status, 0)
+        if smart_passed is False or exit_value & 0x08:
+            failures.append("overall health failed")
+        if pending > 0:
+            failures.append(f"{pending} pending sectors")
+        if offline_uncorrectable > 0:
+            failures.append(f"{offline_uncorrectable} offline-uncorrectable sectors")
+        if self_test_passed is False or exit_value & 0x80:
+            failures.append(f"self-test failed{f' ({self_test_label})' if self_test_label else ''}")
+        if reallocated > 0:
+            warnings.append(f"{reallocated} reallocated sectors")
+        if interface_errors > 0:
+            warnings.append(f"{interface_errors} interface errors")
+        if error_count > 0:
+            warnings.append(f"{error_count} SMART error-log entries")
+        if temperature >= float(check.get("maxTempC", 50)):
+            warnings.append(f"temperature {temperature:.0f}C")
+        if exit_value & 0x70:
+            warnings.append(f"smartctl status 0x{exit_value:02x}")
+        if smart_passed is None and not attributes:
+            warnings.append("health attributes unavailable")
+
+        if failures:
+            status = check.get("failureStatus", "fail")
+            message = "; ".join(failures + warnings)
+        elif warnings:
+            status = "warn"
+            message = "; ".join(warnings)
+        else:
+            status = "ok"
+            message = f"SMART healthy, {temperature:.0f}C" if temperature else "SMART healthy"
+        return operation_check_result(
+            check,
+            status,
+            message,
+            started,
+            smartAvailable=True,
+            smartPassed=smart_passed,
+            temperatureC=round(temperature, 1) if temperature else None,
+            reallocatedSectors=reallocated,
+            pendingSectors=pending,
+            offlineUncorrectableSectors=offline_uncorrectable,
+            interfaceErrors=interface_errors,
+            smartErrorCount=error_count,
+            selfTestPassed=self_test_passed,
+            smartctlExitStatus=exit_status,
+        )
+
+    def listener_address_ignored(self, address: str) -> bool:
+        clean = address.strip("[]")
+        if clean in {"", "*", "0.0.0.0", "::"}:
+            return False
+        if "%" in clean:
+            clean = clean.split("%", 1)[0]
+        try:
+            ip = ipaddress.ip_address(clean)
+        except ValueError:
+            return False
+        return any(ip in network for network in IGNORED_LISTENER_NETWORKS)
+
+    def parse_ss_listener(self, line: str) -> tuple[str, str, int] | None:
+        parts = line.split()
+        if len(parts) < 5:
+            return None
+        proto = parts[0].lower()
+        local = parts[4]
+        if local.startswith("[") and "]:" in local:
+            address, port_text = local.rsplit("]:", 1)
+            address = address[1:]
+        elif ":" in local:
+            address, port_text = local.rsplit(":", 1)
+        else:
+            return None
+        try:
+            return proto, address, int(port_text)
+        except ValueError:
+            return None
+
+    def port_drift_operation_check(self, check: dict, started: float) -> dict:
+        proc = run_cmd(["/usr/bin/ss", "-H", "-tuln"], timeout=4)
+        if proc.returncode != 0:
+            return operation_check_result(check, check.get("failureStatus", "warn"), proc_output(proc) or "ss failed", started)
+        allow = {str(item).lower() for item in check.get("allow", [])}
+        ignore_udp_above = int(check.get("ignoreUdpAbove", 0) or 0)
+        listeners = set()
+        for line in (proc.stdout or "").splitlines():
+            parsed = self.parse_ss_listener(line)
+            if not parsed:
+                continue
+            proto, address, port = parsed
+            if proto not in {"tcp", "udp"}:
+                continue
+            if self.listener_address_ignored(address):
+                continue
+            if proto == "udp" and ignore_udp_above and port > ignore_udp_above:
+                continue
+            listeners.add(f"{proto}/{port}")
+        unexpected = sorted(listeners - allow)
+        ok = not unexpected
+        message = f"{len(listeners)} expected listeners" if ok else f"unexpected: {', '.join(unexpected[:6])}"
+        return operation_check_result(check, "ok" if ok else check.get("failureStatus", "warn"), message, started, listeners=sorted(listeners), unexpected=unexpected)
 
     def timer_operation_check(self, check: dict, started: float) -> dict:
         unit = check["unit"]
@@ -1526,6 +2143,63 @@ class DashboardCache:
             message = f"{state}, last {last_age_hours:.1f}h ago"
         return operation_check_result(check, "ok" if ok else check.get("failureStatus", "warn"), message, started, unit=unit, lastAgeHours=round(last_age_hours, 1) if last_age_hours is not None else None)
 
+    def systemd_service_result_operation_check(self, check: dict, started: float) -> dict:
+        unit = check["unit"]
+        proc = run_cmd(
+            [
+                "/bin/systemctl",
+                "show",
+                unit,
+                "-p",
+                "ActiveState",
+                "-p",
+                "SubState",
+                "-p",
+                "Result",
+                "-p",
+                "ExecMainStatus",
+                "-p",
+                "ExecMainStartTimestamp",
+                "-p",
+                "ExecMainExitTimestamp",
+            ],
+            timeout=3,
+        )
+        if proc.returncode != 0:
+            return operation_check_result(check, check.get("failureStatus", "fail"), proc_output(proc) or "service result check failed", started, unit=unit)
+        fields = {}
+        for line in (proc.stdout or "").splitlines():
+            if "=" in line:
+                key, value = line.split("=", 1)
+                fields[key] = value.strip()
+        active = fields.get("ActiveState") or "unknown"
+        result = fields.get("Result") or "unknown"
+        status_code = safe_int(fields.get("ExecMainStatus"), 0)
+        started_at = fields.get("ExecMainStartTimestamp") or ""
+
+        if active in {"active", "activating"}:
+            ok = True
+            message = f"{active}"
+        elif not started_at:
+            ok = bool(check.get("allowNever"))
+            message = "not run during this boot"
+        else:
+            ok = result == "success" and status_code == 0
+            message = f"{result}, exit {status_code}"
+        return operation_check_result(
+            check,
+            "ok" if ok else check.get("failureStatus", "fail"),
+            message,
+            started,
+            unit=unit,
+            activeState=active,
+            subState=fields.get("SubState") or "unknown",
+            serviceResult=result,
+            exitStatus=status_code,
+            startedAt=started_at or None,
+            exitedAt=fields.get("ExecMainExitTimestamp") or None,
+        )
+
     def backup_operation_check(self, check: dict, started: float) -> dict:
         path = Path(check["path"])
         if not path.exists():
@@ -1546,6 +2220,114 @@ class DashboardCache:
             message = f"{message}, {file_count} files, {total_bytes / 1024:.0f} KB"
             extra = {"fileCount": file_count, "bytes": total_bytes}
         return operation_check_result(check, "ok" if ok else check.get("failureStatus", "warn"), message, started, **extra)
+
+    def remote_backup_operation_check(self, check: dict, started: float) -> dict:
+        path = str(check["path"])
+        pattern = str(check.get("pattern", "*.tgz"))
+        command = (
+            f"find {shlex.quote(path)} -maxdepth 1 -type f -name {shlex.quote(pattern)} "
+            "-printf '%T@ %s %f\\n' 2>/dev/null | sort -nr | head -1"
+        )
+        proc = run_cmd(
+            [
+                "/usr/bin/ssh",
+                "-o",
+                "BatchMode=yes",
+                "-o",
+                f"ConnectTimeout={int(check.get('connectTimeout', 4))}",
+                check["sshTarget"],
+                f"bash -lc {shlex.quote(command)}",
+            ],
+            timeout=float(check.get("timeout", 8)),
+        )
+        if proc.returncode != 0:
+            return operation_check_result(check, check.get("failureStatus", "warn"), proc_output(proc) or "remote backup check failed", started)
+        line = ""
+        for candidate in (proc.stdout or "").strip().splitlines():
+            if re.match(r"^\d+(?:\.\d+)?\s+\d+\s+", candidate.strip()):
+                line = candidate.strip()
+                break
+        if not line:
+            return operation_check_result(check, check.get("failureStatus", "warn"), "no remote backups found", started)
+        parts = line.split(maxsplit=2)
+        if len(parts) < 3:
+            return operation_check_result(check, check.get("failureStatus", "warn"), "remote backup output unreadable", started)
+        newest = float(parts[0])
+        size = int(float(parts[1]))
+        name = parts[2]
+        age_hours = (time.time() - newest) / 3600
+        max_age = float(check.get("maxAgeHours", 72))
+        ok = age_hours <= max_age and size > 0
+        message = f"{name}, {age_hours:.1f}h old, {size / 1024:.0f} KB"
+        return operation_check_result(check, "ok" if ok else check.get("failureStatus", "warn"), message, started, ageHours=round(age_hours, 1), bytes=size)
+
+    def remote_backup_parity_operation_check(self, check: dict, started: float) -> dict:
+        local_path = Path(check["localPath"])
+        remote_path = str(check["remotePath"])
+        pattern = str(check.get("pattern", "pi4-backup-*.tgz*"))
+        if not local_path.is_dir():
+            return operation_check_result(check, check.get("failureStatus", "warn"), "local backup path is missing", started)
+
+        max_files = int(check.get("maxFiles", 128))
+        local_items = sorted(
+            (item for item in local_path.glob(pattern) if item.is_file()),
+            key=lambda item: item.stat().st_mtime,
+            reverse=True,
+        )[:max_files]
+        local = {item.name: item.stat().st_size for item in local_items}
+        if not local:
+            return operation_check_result(check, check.get("failureStatus", "warn"), "no local backup artifacts found", started)
+
+        command = (
+            f"find {shlex.quote(remote_path)} -maxdepth 1 -type f -name {shlex.quote(pattern)} "
+            f"-printf '%f\\t%s\\n' 2>/dev/null | sort | head -n {max_files}"
+        )
+        proc = self.ssh_run(check, command, timeout=float(check.get("timeout", 8)))
+        if proc.returncode != 0:
+            return operation_check_result(check, check.get("failureStatus", "warn"), proc_output(proc) or "remote parity check failed", started)
+
+        remote = {}
+        for line in (proc.stdout or "").splitlines():
+            try:
+                name, size_text = line.rsplit("\t", 1)
+                remote[name] = int(size_text)
+            except (ValueError, TypeError):
+                continue
+
+        missing_remote = sorted(set(local) - set(remote))
+        size_mismatches = sorted(name for name in set(local) & set(remote) if local[name] != remote[name])
+        local_archives = {name for name in local if name.endswith(".tgz")}
+        local_checksums = {name for name in local if name.endswith(".tgz.sha256")}
+        unpaired_local = sorted(
+            {name for name in local_archives if f"{name}.sha256" not in local}
+            | {name for name in local_checksums if name.removesuffix(".sha256") not in local}
+        )
+        ok = bool(local_archives) and not missing_remote and not size_mismatches and not unpaired_local
+        if ok:
+            message = f"{len(local_archives)} local backup sets mirrored to Pi5"
+        else:
+            parts = []
+            if missing_remote:
+                parts.append(f"{len(missing_remote)} remote artifacts missing")
+            if size_mismatches:
+                parts.append(f"{len(size_mismatches)} size mismatches")
+            if unpaired_local:
+                parts.append(f"{len(unpaired_local)} unpaired local artifacts")
+            if not local_archives:
+                parts.append("no local archives")
+            message = ", ".join(parts)
+        return operation_check_result(
+            check,
+            "ok" if ok else check.get("failureStatus", "warn"),
+            message,
+            started,
+            localArtifactCount=len(local),
+            remoteArtifactCount=len(remote),
+            backupSetCount=len(local_archives),
+            missingRemote=missing_remote[:12],
+            sizeMismatches=size_mismatches[:12],
+            unpairedLocal=unpaired_local[:12],
+        )
 
     def backup_artifacts_operation_check(self, check: dict, started: float) -> dict:
         root = Path(check["path"])
@@ -1621,6 +2403,28 @@ class DashboardCache:
         ok = count <= max_entries and oldest_age_days <= max_oldest_days
         message = f"{count} entries, oldest {oldest_age_days:.0f}d"
         return operation_check_result(check, "ok" if ok else check.get("failureStatus", "warn"), message, started, entryCount=count, oldestAgeDays=round(oldest_age_days, 1))
+
+    def file_freshness_operation_check(self, check: dict, started: float) -> dict:
+        path = Path(check["path"])
+        if not path.is_file():
+            return operation_check_result(check, check.get("failureStatus", "warn"), "file is missing", started)
+        age_hours = (time.time() - path.stat().st_mtime) / 3600
+        max_age = float(check.get("maxAgeHours", 168))
+        ok = age_hours <= max_age
+        message = f"updated {age_hours:.1f}h ago"
+        extra = {"ageHours": round(age_hours, 1)}
+        if check.get("jsonField"):
+            try:
+                data = json.loads(path.read_text(encoding="utf-8", errors="replace") or "{}")
+            except Exception:
+                data = {}
+                ok = False
+            actual = nested_get(data, check["jsonField"])
+            expected = check.get("jsonEquals", True)
+            ok = ok and actual == expected
+            message = f"{message}, {check['jsonField']}={actual!r}"
+            extra["jsonValue"] = actual
+        return operation_check_result(check, "ok" if ok else check.get("failureStatus", "warn"), message, started, **extra)
 
     def path_freshness_operation_check(self, check: dict, started: float) -> dict:
         path = Path(check["path"])

@@ -1,22 +1,32 @@
 # Cabrera Network Memory
 
+## 2026-07-09 Power, Storage, And Off-Host Monitoring
+
+- 2026-07-09 power/storage follow-through adds atomic clean-shutdown tracking in `/var/lib/pi4-boot-state/state.json`, a SMART health helper and self-test timers pinned to the HDD's persistent WWN, strict UUID/filesystem/rw mount validation, a guarded log2ram journal fix, backup service-result checks, and exact local-to-Pi5 backup artifact parity.
+- `/mnt/ssd` remains the compatibility path but is physically a rotational, bus-powered WDC WD20SDRW USB HDD. Dashboard labels and storage metadata say `Data HDD`; a real SSD migration remains hardware-gated.
+- Uptime Kuma remains on Pi4 at `192.168.0.101:3001`; the attempted Pi5 migration was abandoned after the copied database contained zero monitors, and the temporary Pi5 resources were removed. Notification state records delivery attempts/successes/failures and retries a failed morning digest on a bounded 30-minute cadence.
+- Backup jobs now fail on missing critical sources, snapshot k3s and Kuma with SQLite's backup API, and require checksum plus SQLite integrity validation during the off-host restore drill.
+
 ## 2026-07-05 Personal Operations Center
 
+- 2026-07-06 follow-up added Pi4 backup/restore-drill automation: `/usr/local/sbin/pi4-backup`, `/usr/local/sbin/pi4-restore-drill`, `pi4-backup.timer`, and `pi4-restore-drill.timer`. Local archives live under `/mnt/ssd/backups/pi4`; off-host copies go to `pi5@192.168.0.94:/home/pi5/backups/pi4`; restore drills extract on Pi5 under `/home/pi5/restore-drills/pi4`.
+- Ops Center now watches Pi4 power/throttle flags, off-host backup freshness, backup and restore-drill timers, k3s deployment resource guardrails, and stable open-port drift. Existing kernel storage checks also include under-voltage messages.
+- Pi4 k3s hygiene target: keep current workloads in `homelab` for now, with resource guardrails and custom role labels. Future namespace separation can move core/observability/apps/experiments without changing current hostPort ownership in this pass.
 - The Ops panel now includes `OPS_CENTER` from the Flask sidecar: five-minute, hourly, morning, and nightly cadences are configured in `server/app.py`.
-- Five-minute checks watch gateway, DNS, WAN HTTPS, Pi4 dashboard, Pi4 k3s GRID/Uptime Kuma, and Pi5 service endpoints for Coinbot, Mission Control, EagleEye, CabreraPrograms, and Portfolio API.
+- Five-minute checks watch gateway, DNS, WAN HTTPS, Pi4 dashboard/GRID/Uptime Kuma, and Pi5 service endpoints for Coinbot, Mission Control, EagleEye, CabreraPrograms, and Portfolio API.
 - Hourly checks include a lightweight WAN speed sample, latest k3s GitHub release lookup, `/mnt/ssd/backups` freshness, Pi4 k3s node/workload readiness, GRID schema health, local registry, and Pi5 portfolio web.
 - Hourly backup verification checks the newest backup set for real file content, and Pi5 k3s readiness is checked from Pi4 over SSH via `PI4_NOC_PI5_SSH_TARGET` (default `pi5@192.168.0.94`) using `sudo -n k3s kubectl`.
 - Follow-up hardening added read-only deeper health checks: timer last-trigger freshness, kernel storage/I/O journal pattern scans, inode usage and read-only mount detection for disk checks, GRID vault/index sync freshness from `/api/stats`, backup retention pressure, and a morning overnight-storage-events scan.
 - Backup artifact integrity checks now read recent `.tgz` archives and verify `.sha256` files whose targets live in the same backup folder; cross-backup/protected checksum references are counted as skipped metadata.
 - Five-minute internet monitoring now includes multi-endpoint HTTP latency and DNS latency probes. Nightly sync/parity coverage includes a GRID vault path parity check between `/mnt/nas/brain` and `/mnt/ssd/nas/brain`; unreadable protected note contents fall back to metadata parity.
-- Morning and nightly are wall-clock schedules, not service-start intervals: morning next-runs at `07:00`, nightly at `23:55` local time. Nightly checks watch log/cleanup timers, package DB backup timer, SSD trim timer, disk headroom, GRID brain mount, and GRID brain freshness.
+- Morning and nightly are wall-clock schedules, not service-start intervals: morning next-runs at `07:00`, nightly at `23:55` local time. Nightly checks watch log/cleanup timers, package DB backup timer, filesystem trim, Data HDD health/mount/SMART, GRID brain mount, and GRID brain freshness.
 - Ops notifications are configurable through `/etc/pi4-noc/notify.env` with a sample at `/etc/pi4-noc/notify.env.example`; delivery supports SMTP email, a generic JSON webhook, or `PI4_NOC_NOTIFY_WEBHOOK_FORMAT=form` for form-encoded relay providers such as FormSubmit, with dedupe state in `/var/lib/pi4-noc/notification-state.json`.
 - The compact UI prioritizes warn/fail checks before OK checks and shows a `+N more checks tracked` row when a cadence has more than five checks. Current live warning after deploy was `Coinbot API: degraded=true`; all other live ops checks passed.
 
 ## 2026-06-09 Probe-Based Status, Speed + Mobile Pass
 
 - Web app status is now TCP-probe-based (`probe_ports` in `server/app.py`), not `ss` LISTEN-set membership. GRID and Uptime Kuma moved to k3s with `hostPort` exposure, which uses iptables DNAT and never creates LISTEN sockets — the old check showed them "not listening" while they worked. Labels are now `online`/`offline`.
-- Uptime Kuma and GRID appear in Services as k3s-backed rows (`kind: "k3s"` in `UNIT_CONFIG`, status from cached K3S workload ready/desired). Restart maps to `kubectl rollout restart`; logs use the new `k3s-workload` source in `/api/logs` (allowlisted via `ALLOWED_WORKLOAD_LOGS`). `container-uptime-kuma.service` is retired.
+- Uptime Kuma and GRID appear in Services as local k3s-backed rows (`kind: "k3s"` in `UNIT_CONFIG`, status from cached K3S workload ready/desired). Restart maps to `kubectl rollout restart`; logs use the `k3s-workload` source in `/api/logs`.
 - Geist/Geist Mono are self-hosted (`src/fonts/*.woff2`, latin variable subsets, @font-face in `styles.css`); no Google Fonts requests.
 - `npm run build` precompresses dist via `scripts/precompress.mjs`; Flask serves `.gz` siblings (`send_dist`), gzips JSON >1KB, and sends immutable cache headers for `/assets/`. Flask's built-in static handler is disabled (`static_folder=None`) — don't re-enable it or assets bypass compression/caching.
 - `/api/events` SSE ticks every 2s and skips unchanged payloads (keepalive comments instead).
@@ -80,6 +90,6 @@
 ## Related Systems
 
 - AdGuard Home is active on DNS port `53` and admin UI port `8080`.
-- Uptime Kuma runs as k3s deployment `homelab/uptime-kuma` with hostPort `3001` (the old `container-uptime-kuma.service` is retired).
+- Uptime Kuma runs as the Pi4 k3s deployment `homelab/uptime-kuma` with hostPort `3001`; the old `container-uptime-kuma.service` remains retired.
 - GRID runs as k3s deployment `homelab/grid` with hostPorts `8090` (wiki) and `7777` (protected listener/API); `grid.service` is retired.
 - k3s, Samba, SSH, AdGuard, Uptime Kuma, and GRID are intentionally observed/controlled through fixed allowlists only.

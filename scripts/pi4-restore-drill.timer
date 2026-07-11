@@ -1,0 +1,10 @@
+[Unit]
+Description=Run Pi4 off-host restore drill weekly
+
+[Timer]
+OnCalendar=Mon *-*-* 03:10:00
+Persistent=true
+RandomizedDelaySec=20m
+
+[Install]
+WantedBy=timers.target

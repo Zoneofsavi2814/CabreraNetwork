@@ -1,0 +1,10 @@
+[Unit]
+Description=Run a short Pi4 data HDD SMART self-test weekly
+
+[Timer]
+OnCalendar=Sun *-*-* 04:30:00
+Persistent=false
+RandomizedDelaySec=10m
+
+[Install]
+WantedBy=timers.target

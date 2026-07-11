@@ -1,0 +1,11 @@
+[Unit]
+Description=Pi4 off-host restore drill
+Wants=network-online.target
+After=network-online.target
+
+[Service]
+Type=oneshot
+ExecStart=/usr/local/sbin/pi4-restore-drill
+Nice=10
+IOSchedulingClass=best-effort
+IOSchedulingPriority=7

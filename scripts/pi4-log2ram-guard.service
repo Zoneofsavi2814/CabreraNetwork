@@ -1,0 +1,13 @@
+[Unit]
+Description=Verify the Pi4 log2ram journal persistence fix
+After=log2ram.service systemd-journald.service
+Requires=log2ram.service
+ConditionFileIsExecutable=/usr/local/bin/log2ram
+
+[Service]
+Type=oneshot
+ExecStart=/usr/local/sbin/pi4-log2ram-guard
+RemainAfterExit=yes
+
+[Install]
+WantedBy=multi-user.target

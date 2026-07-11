@@ -1,0 +1,11 @@
+[Unit]
+Description=Poll and drain the Cabrera Network alert outbox
+
+[Timer]
+OnBootSec=1min
+OnUnitInactiveSec=5min
+RandomizedDelaySec=30s
+Unit=cabrera-alert-relay.service
+
+[Install]
+WantedBy=timers.target

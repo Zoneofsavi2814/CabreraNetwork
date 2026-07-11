@@ -1,3 +1,5 @@
+import importlib.util
+import json
 import time
 import unittest
 import sys
@@ -54,6 +56,23 @@ except ModuleNotFoundError:
 
 from server import app as appmod
 from server import notifications as notifymod
+from server import sudo_ops
+
+BOOT_STATE_SPEC = importlib.util.spec_from_file_location(
+    "pi4_boot_state",
+    Path(__file__).resolve().parent.parent / "scripts" / "pi4-boot-state.py",
+)
+bootstate = importlib.util.module_from_spec(BOOT_STATE_SPEC)
+assert BOOT_STATE_SPEC.loader is not None
+BOOT_STATE_SPEC.loader.exec_module(bootstate)
+
+ALERT_SUBSCRIBER_SPEC = importlib.util.spec_from_file_location(
+    "cabrera_alerts_subscriber",
+    Path(__file__).resolve().parent.parent / "scripts" / "cabrera-alerts-subscriber.py",
+)
+alert_subscriber = importlib.util.module_from_spec(ALERT_SUBSCRIBER_SPEC)
+assert ALERT_SUBSCRIBER_SPEC.loader is not None
+ALERT_SUBSCRIBER_SPEC.loader.exec_module(alert_subscriber)
 
 
 def datetime_from_parts(year, month, day, hour, minute):
@@ -117,23 +136,56 @@ def ops_check(id_, status, message="detail", label=None, host="Pi4"):
 
 
 class OpsCenterTests(unittest.TestCase):
+    def test_portfolio_api_uses_tailnet_health_endpoint(self):
+        portfolio = next(check for check in appmod.OPS_CHECK_CONFIG["five-minute"] if check["id"] == "portfolio-api")
+
+        self.assertEqual(portfolio["url"], appmod.PI5_PORTFOLIO_HEALTH_URL)
+        self.assertEqual(portfolio["url"], "https://raspberrypi5.tail83be27.ts.net/api/health")
+
     def test_ops_config_covers_required_cadence_work(self):
         five_minute_ids = {check["id"] for check in appmod.OPS_CHECK_CONFIG["five-minute"]}
         hourly_ids = {check["id"] for check in appmod.OPS_CHECK_CONFIG["hourly"]}
         nightly_ids = {check["id"] for check in appmod.OPS_CHECK_CONFIG["nightly"]}
 
-        self.assertTrue({"gateway", "dns-resolver", "wan-http", "wan-latency", "dns-latency"}.issubset(five_minute_ids))
-        self.assertTrue({"wan-speed", "k3s-release", "hourly-backups", "backup-artifacts", "pi5-k3s-node", "pi5-k3s-apps"}.issubset(hourly_ids))
+        self.assertTrue({"gateway", "dns-resolver", "pi4-power-throttle", "pi4-boot-state", "wan-http", "wan-latency", "dns-latency"}.issubset(five_minute_ids))
+        self.assertTrue(
+            {
+                "wan-speed",
+                "k3s-release",
+                "hourly-backups",
+                "offhost-backups",
+                "offhost-backup-parity",
+                "backup-artifacts",
+                "pi4-k3s-resources",
+                "pi4-port-drift",
+                "pi5-k3s-node",
+                "pi5-k3s-apps",
+                "pi5-systemd-failures",
+                "pi5-portfolio-sync-timer",
+                "pi5-tailscale",
+                "pi5-system-headroom",
+                "pi5-package-upgrades",
+            }.issubset(hourly_ids)
+        )
         self.assertTrue(
             {
                 "logrotate-timer",
                 "log2ram-flush",
                 "tmpfiles-clean",
                 "dpkg-backup",
-                "ssd-trim",
+                "pi4-backup-timer",
+                "restore-drill-timer",
+                "restore-drill-state",
+                "backup-service-result",
+                "restore-drill-service-result",
+                "filesystem-trim",
                 "kernel-io-health",
                 "root-disk",
-                "ssd-disk",
+                "data-hdd-disk",
+                "data-hdd-mount",
+                "data-hdd-smart",
+                "data-hdd-smart-short-timer",
+                "data-hdd-smart-long-timer",
                 "brain-mount",
                 "brain-freshness",
                 "brain-vault-parity",
@@ -143,6 +195,20 @@ class OpsCenterTests(unittest.TestCase):
         )
         self.assertEqual(appmod.OPS_CADENCE_CONFIG[2]["scheduleTime"], "07:00")
         self.assertEqual(appmod.OPS_CADENCE_CONFIG[3]["scheduleTime"], "23:55")
+
+    def test_kuma_monitoring_remains_on_pi4(self):
+        five_minute = {check["id"]: check for check in appmod.OPS_CHECK_CONFIG["five-minute"]}
+        hourly = {check["id"]: check for check in appmod.OPS_CHECK_CONFIG["hourly"]}
+        units = {unit["id"]: unit for unit in appmod.UNIT_CONFIG}
+        web_apps = {web_app["id"]: web_app for web_app in appmod.WEB_APP_CONFIG}
+
+        self.assertEqual(five_minute["uptime-kuma"]["url"], "http://192.168.0.101:3001/")
+        self.assertEqual(web_apps["uptime-kuma"]["url"], "http://192.168.0.101:3001/")
+        self.assertEqual(units["kuma"]["namespace"], "homelab")
+        self.assertEqual(units["kuma"]["workload"], "uptime-kuma")
+        self.assertIn("uptime-kuma", hourly["pi4-k3s-apps"]["workloads"])
+        self.assertIn("uptime-kuma", hourly["pi4-k3s-resources"]["workloads"])
+        self.assertNotIn("uptime-kuma", hourly["pi5-k3s-apps"]["workloads"])
 
     def test_daily_schedule_helpers_keep_morning_wall_clock(self):
         base = datetime_from_parts(2026, 7, 5, 2, 30)
@@ -218,6 +284,41 @@ class OpsCenterTests(unittest.TestCase):
         self.assertEqual(notifier.sent[0]["severity"], "morning")
         self.assertIn("all green", notifier.sent[0]["subject"])
 
+    def test_failed_morning_notification_retries_with_bounded_backoff(self):
+        class FlakyNotificationManager(RecordingNotificationManager):
+            def __init__(self, state_path):
+                super().__init__(state_path)
+                self.outcomes = [False, True]
+                self.env["PI4_NOC_NOTIFY_MORNING_RETRY_SECONDS"] = "900"
+
+            def send(self, subject: str, body: str, *, severity: str = "info") -> bool:
+                self.sent.append({"subject": subject, "body": body, "severity": severity})
+                return self.outcomes.pop(0)
+
+        with tempfile.TemporaryDirectory() as tmp:
+            state_path = Path(tmp) / "notify-state.json"
+            notifier = FlakyNotificationManager(state_path)
+            ops = ops_snapshot(ops_check("brief", "ok", "brief generated"))
+            morning = [{"id": "morning", "label": "Every morning"}]
+            five_minute = [{"id": "five-minute", "label": "Every 5 minutes"}]
+            start = datetime_from_parts(2026, 7, 6, 7, 1)
+
+            first = notifier.dispatch_operation_notifications(ops, morning, now=start)
+            too_soon = notifier.dispatch_operation_notifications(ops, morning, now=start + 899)
+            retried = notifier.dispatch_operation_notifications(ops, five_minute, now=start + 900)
+            after_success = notifier.dispatch_operation_notifications(ops, five_minute, now=start + 1800)
+            state = json.loads(state_path.read_text(encoding="utf-8"))
+
+        self.assertEqual(first, [])
+        self.assertEqual(too_soon, [])
+        self.assertEqual(len(retried), 1)
+        self.assertEqual(after_success, [])
+        self.assertEqual(len(notifier.sent), 2)
+        self.assertEqual(state["morning"]["lastDate"], "2026-07-06")
+        self.assertNotIn("pendingDate", state["morning"])
+        self.assertIn("lastFailureAt", state["delivery"])
+        self.assertIn("lastSuccessAt", state["delivery"])
+
     def test_critical_notification_dedupes_until_recovery(self):
         with tempfile.TemporaryDirectory() as tmp:
             notifier = RecordingNotificationManager(Path(tmp) / "notify-state.json")
@@ -245,6 +346,25 @@ class OpsCenterTests(unittest.TestCase):
             notifier.dispatch_operation_notifications(failing, due, now=start)
             notifier.dispatch_operation_notifications(failing, due, now=start + 30)
             notifier.dispatch_operation_notifications(failing, due, now=start + 61)
+
+        self.assertEqual(len(notifier.sent), 2)
+
+    def test_failed_critical_notification_uses_bounded_retry_cooldown(self):
+        class FailingNotificationManager(RecordingNotificationManager):
+            def send(self, subject: str, body: str, *, severity: str = "info") -> bool:
+                self.sent.append({"subject": subject, "body": body, "severity": severity})
+                return False
+
+        with tempfile.TemporaryDirectory() as tmp:
+            notifier = FailingNotificationManager(Path(tmp) / "notify-state.json")
+            notifier.env["PI4_NOC_NOTIFY_CRITICAL_COOLDOWN_SECONDS"] = "600"
+            due = [{"id": "five-minute", "label": "Every 5 minutes"}]
+            start = datetime_from_parts(2026, 7, 6, 8, 0)
+            failing = ops_snapshot(ops_check("grid-web", "fail", "health check failed", "GRID web/API"))
+
+            notifier.dispatch_operation_notifications(failing, due, now=start)
+            notifier.dispatch_operation_notifications(failing, due, now=start + 300)
+            notifier.dispatch_operation_notifications(failing, due, now=start + 601)
 
         self.assertEqual(len(notifier.sent), 2)
 
@@ -317,9 +437,91 @@ class OpsCenterTests(unittest.TestCase):
         self.assertEqual(captured["url"], "https://formsubmit.co/ajax/zoneofsavi@gmail.com")
         self.assertEqual(captured["headers"]["Content-type"], "application/x-www-form-urlencoded")
         self.assertEqual(captured["headers"]["Referer"], "http://192.168.0.101/")
+        self.assertEqual(captured["timeout"], 30.0)
         self.assertIn("_subject=Ops+subject", captured["data"])
         self.assertIn("message=Ops+body", captured["data"])
         self.assertIn("_captcha=false", captured["data"])
+
+    def test_ntfy_is_primary_and_uses_private_topic_json(self):
+        captured = []
+
+        def fake_urlopen(req, timeout=0):
+            captured.append({"url": req.full_url, "timeout": timeout, "payload": json.loads(req.data.decode())})
+            return FakeResponse('{"id":"ntfy-test","time":1,"event":"message","topic":"private_topic_1234567890"}')
+
+        notifier = notifymod.NotificationManager(
+            {
+                "PI4_NOC_NOTIFY_NTFY_URL": "https://ntfy.sh/private_topic_1234567890",
+                "PI4_NOC_NOTIFY_NTFY_CLICK_URL": "http://192.168.0.101/",
+                "PI4_NOC_NOTIFY_WEBHOOK_URL": "https://fallback.example.test/hook",
+            }
+        )
+        with patch.object(notifymod.urlrequest, "urlopen", side_effect=fake_urlopen):
+            delivered = notifier.send("Critical test", "Host is down", severity="critical")
+
+        self.assertTrue(delivered)
+        self.assertEqual(len(captured), 1)
+        self.assertEqual(captured[0]["url"], "https://ntfy.sh/")
+        self.assertEqual(captured[0]["payload"]["topic"], "private_topic_1234567890")
+        self.assertEqual(captured[0]["payload"]["priority"], 5)
+        self.assertEqual(captured[0]["payload"]["click"], "http://192.168.0.101/")
+
+    def test_ntfy_failure_uses_existing_webhook_as_fallback(self):
+        responses = [TimeoutError("ntfy unavailable"), FakeResponse('{"success":true}')]
+        calls = []
+
+        def fake_urlopen(req, timeout=0):
+            calls.append(req.full_url)
+            response = responses.pop(0)
+            if isinstance(response, Exception):
+                raise response
+            return response
+
+        notifier = notifymod.NotificationManager(
+            {
+                "PI4_NOC_NOTIFY_NTFY_URL": "https://ntfy.sh/private_topic_1234567890",
+                "PI4_NOC_NOTIFY_WEBHOOK_URL": "https://fallback.example.test/ajax/recipient",
+                "PI4_NOC_NOTIFY_WEBHOOK_FORMAT": "form",
+            }
+        )
+        with patch.object(notifymod.urlrequest, "urlopen", side_effect=fake_urlopen):
+            delivered = notifier.send("Fallback test", "ntfy failed", severity="critical")
+
+        self.assertTrue(delivered)
+        self.assertEqual(calls, ["https://ntfy.sh/", "https://fallback.example.test/ajax/recipient"])
+
+    def test_macos_alert_subscriber_dedupes_and_omits_message_from_receipts(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            subscriber = alert_subscriber.Subscriber(root / "state.json", root / "receipts.jsonl")
+            event = {
+                "event": "message",
+                "id": "message-1",
+                "time": 1234,
+                "title": "RP4 alert",
+                "message": "protected operational detail",
+                "priority": 5,
+            }
+            with patch.object(alert_subscriber, "display_notification", return_value=True) as display:
+                first = subscriber.handle(event)
+                second = subscriber.handle(event)
+
+            receipt_text = (root / "receipts.jsonl").read_text(encoding="utf-8")
+            state = json.loads((root / "state.json").read_text(encoding="utf-8"))
+
+        self.assertTrue(first)
+        self.assertFalse(second)
+        display.assert_called_once_with("RP4 alert", "protected operational detail")
+        self.assertNotIn("protected operational detail", receipt_text)
+        self.assertEqual(state["recentIds"], ["message-1"])
+
+    def test_macos_alert_subscriber_requires_private_https_topic(self):
+        self.assertEqual(
+            alert_subscriber.validate_topic_url("https://ntfy.sh/private_topic_1234567890/"),
+            "https://ntfy.sh/private_topic_1234567890",
+        )
+        with self.assertRaises(ValueError):
+            alert_subscriber.validate_topic_url("http://ntfy.sh/short")
 
     def test_webhook_failure_response_is_not_counted_as_delivered(self):
         notifier = appmod.NotificationManager({"PI4_NOC_NOTIFY_WEBHOOK_URL": "https://notify.test"})
@@ -445,6 +647,277 @@ class OpsCenterTests(unittest.TestCase):
         self.assertEqual(result["status"], "ok")
         self.assertEqual(result["message"], "3/3 workloads ready")
 
+    def test_ssh_k3s_operation_check_flags_missing_configured_workload(self):
+        cache = appmod.DashboardCache()
+        check = {
+            "id": "pi5-k3s-apps",
+            "label": "Pi5 k3s apps",
+            "host": "Pi5 k3s",
+            "kind": "ssh-k3s",
+            "sshTarget": "pi5@192.168.0.94",
+            "scope": "workloads",
+            "workloads": ["coinbot", "eagleeye"],
+        }
+        body = {
+            "items": [
+                {"kind": "Deployment", "metadata": {"name": "coinbot"}, "spec": {"replicas": 1}, "status": {"readyReplicas": 1}},
+            ]
+        }
+        proc = types.SimpleNamespace(returncode=0, stdout=appmod.json.dumps(body), stderr="")
+
+        with patch.object(appmod, "run_cmd", return_value=proc):
+            result = cache.ssh_k3s_operation_check(check, time.monotonic())
+
+        self.assertEqual(result["status"], "warn")
+        self.assertEqual(result["missingWorkloads"], ["eagleeye"])
+        self.assertEqual(result["message"], "1/2 workloads ready; missing eagleeye")
+
+    def test_ssh_systemd_failed_operation_check_reports_clean_host(self):
+        cache = appmod.DashboardCache()
+        check = {
+            "id": "pi5-systemd-failures",
+            "label": "Pi5 failed units",
+            "host": "Pi5",
+            "kind": "ssh-systemd-failed",
+            "sshTarget": "pi5@192.168.0.94",
+        }
+        proc = types.SimpleNamespace(returncode=0, stdout="", stderr="")
+
+        with patch.object(cache, "ssh_run", return_value=proc):
+            result = cache.ssh_systemd_failed_operation_check(check, time.monotonic())
+
+        self.assertEqual(result["status"], "ok")
+        self.assertEqual(result["failedUnits"], [])
+
+    def test_ssh_systemd_failed_operation_check_flags_failed_units(self):
+        cache = appmod.DashboardCache()
+        check = {
+            "id": "pi5-systemd-failures",
+            "label": "Pi5 failed units",
+            "host": "Pi5",
+            "kind": "ssh-systemd-failed",
+            "sshTarget": "pi5@192.168.0.94",
+        }
+        proc = types.SimpleNamespace(
+            returncode=0,
+            stdout="cabrera-portfolio-manual-sync.service loaded failed failed CabreraPortfolio manual portal sync\n",
+            stderr="",
+        )
+
+        with patch.object(cache, "ssh_run", return_value=proc):
+            result = cache.ssh_systemd_failed_operation_check(check, time.monotonic())
+
+        self.assertEqual(result["status"], "fail")
+        self.assertEqual(result["failedUnits"], ["cabrera-portfolio-manual-sync.service"])
+
+    def test_ssh_systemd_unit_operation_check_reports_active_unit(self):
+        cache = appmod.DashboardCache()
+        check = {
+            "id": "pi5-tailscale",
+            "label": "Pi5 Tailscale",
+            "host": "Pi5",
+            "kind": "ssh-systemd-unit",
+            "sshTarget": "pi5@192.168.0.94",
+            "unit": "tailscaled.service",
+        }
+        proc = types.SimpleNamespace(returncode=0, stdout="active\n", stderr="")
+
+        with patch.object(cache, "ssh_run", return_value=proc):
+            result = cache.ssh_systemd_unit_operation_check(check, time.monotonic())
+
+        self.assertEqual(result["status"], "ok")
+        self.assertEqual(result["activeState"], "active")
+
+    def test_ssh_pi_health_operation_check_reports_headroom(self):
+        cache = appmod.DashboardCache()
+        check = {
+            "id": "pi5-system-headroom",
+            "label": "Pi5 system headroom",
+            "host": "Pi5",
+            "kind": "ssh-pi-health",
+            "sshTarget": "pi5@192.168.0.94",
+            "maxDiskPct": 85,
+            "maxTempC": 70,
+        }
+        proc = types.SimpleNamespace(
+            returncode=0,
+            stdout="disk_pct=11\ndisk_avail=197G\nmem_avail_mb=5900\ntemp_c=45.0\nthrottle=0x0\n",
+            stderr="",
+        )
+
+        with patch.object(cache, "ssh_run", return_value=proc):
+            result = cache.ssh_pi_health_operation_check(check, time.monotonic())
+
+        self.assertEqual(result["status"], "ok")
+        self.assertEqual(result["diskPct"], 11.0)
+        self.assertEqual(result["throttleHex"], "0x0")
+
+    def test_ssh_apt_upgrades_operation_check_warns_on_backlog(self):
+        cache = appmod.DashboardCache()
+        check = {
+            "id": "pi5-package-upgrades",
+            "label": "Pi5 package upgrades",
+            "host": "Pi5",
+            "kind": "ssh-apt-upgrades",
+            "sshTarget": "pi5@192.168.0.94",
+            "warnCount": 25,
+        }
+        proc = types.SimpleNamespace(returncode=0, stdout="106\n", stderr="")
+
+        with patch.object(cache, "ssh_run", return_value=proc):
+            result = cache.ssh_apt_upgrades_operation_check(check, time.monotonic())
+
+        self.assertEqual(result["status"], "warn")
+        self.assertEqual(result["upgradeCount"], 106)
+
+    def test_k3s_resources_operation_check_reports_guardrails(self):
+        cache = appmod.DashboardCache()
+        body = {
+            "items": [
+                {
+                    "metadata": {"name": "grid"},
+                    "spec": {
+                        "template": {
+                            "spec": {
+                                "containers": [
+                                    {
+                                        "name": "grid",
+                                        "resources": {
+                                            "requests": {"cpu": "100m", "memory": "256Mi"},
+                                            "limits": {"cpu": "500m", "memory": "512Mi"},
+                                        },
+                                    }
+                                ]
+                            }
+                        }
+                    },
+                }
+            ]
+        }
+        proc = types.SimpleNamespace(returncode=0, stdout=appmod.json.dumps(body), stderr="")
+        check = {"id": "pi4-k3s-resources", "label": "Pi4 k3s resource guardrails", "host": "Pi4", "kind": "k3s-resources", "namespace": "homelab", "workloads": ["grid"]}
+
+        with patch.object(appmod, "run_cmd", return_value=proc):
+            result = cache.k3s_resources_operation_check(check, time.monotonic())
+
+        self.assertEqual(result["status"], "ok")
+        self.assertEqual(result["inspected"], 1)
+        self.assertEqual(result["missingCount"], 0)
+
+    def test_k3s_resources_operation_check_flags_missing_limits(self):
+        cache = appmod.DashboardCache()
+        body = {
+            "items": [
+                {
+                    "metadata": {"name": "local-registry"},
+                    "spec": {"template": {"spec": {"containers": [{"name": "registry", "resources": {"requests": {"memory": "128Mi"}}}]}}},
+                }
+            ]
+        }
+        proc = types.SimpleNamespace(returncode=0, stdout=appmod.json.dumps(body), stderr="")
+        check = {"id": "pi4-k3s-resources", "label": "Pi4 k3s resource guardrails", "host": "Pi4", "kind": "k3s-resources", "namespace": "homelab", "workloads": ["local-registry"]}
+
+        with patch.object(appmod, "run_cmd", return_value=proc):
+            result = cache.k3s_resources_operation_check(check, time.monotonic())
+
+        self.assertEqual(result["status"], "warn")
+        self.assertGreater(result["missingCount"], 0)
+
+    def test_k3s_workload_and_resource_checks_flag_missing_targets(self):
+        cache = appmod.DashboardCache()
+        cache.snapshot_data["K3S"] = {"workloads": [{"name": "grid", "ready": 1, "desired": 1}]}
+        workload_check = {
+            "id": "pi4-k3s-apps",
+            "label": "Pi4 k3s apps",
+            "kind": "k3s-local",
+            "scope": "workloads",
+            "workloads": ["grid", "uptime-kuma"],
+        }
+        workload_result = cache.k3s_operation_check(workload_check, time.monotonic())
+
+        body = {
+            "items": [
+                {
+                    "metadata": {"name": "grid"},
+                    "spec": {"template": {"spec": {"containers": [{"name": "grid", "resources": {"requests": {"cpu": "100m", "memory": "256Mi"}, "limits": {"cpu": "1", "memory": "768Mi"}}}]}}},
+                }
+            ]
+        }
+        resource_check = {
+            "id": "pi4-k3s-resources",
+            "label": "Pi4 k3s resources",
+            "kind": "k3s-resources",
+            "namespace": "homelab",
+            "workloads": ["grid", "uptime-kuma"],
+        }
+        proc = types.SimpleNamespace(returncode=0, stdout=json.dumps(body), stderr="")
+        with patch.object(appmod, "run_cmd", return_value=proc):
+            resource_result = cache.k3s_resources_operation_check(resource_check, time.monotonic())
+
+        self.assertEqual(workload_result["status"], "warn")
+        self.assertEqual(workload_result["missingWorkloads"], ["uptime-kuma"])
+        self.assertEqual(resource_result["status"], "warn")
+        self.assertEqual(resource_result["missingWorkloads"], ["uptime-kuma"])
+
+    def test_raspi_throttle_operation_check_reports_sticky_voltage(self):
+        cache = appmod.DashboardCache()
+        check = {"id": "pi4-power-throttle", "label": "Pi4 power/throttle", "host": "Pi4", "kind": "raspi-throttle"}
+        proc = types.SimpleNamespace(returncode=0, stdout="throttled=0x50000\n", stderr="")
+
+        with patch.object(appmod, "run_cmd", return_value=proc):
+            result = cache.raspi_throttle_operation_check(check, time.monotonic())
+
+        self.assertEqual(result["status"], "warn")
+        self.assertIn("under-voltage occurred", result["message"])
+
+    def test_port_drift_operation_check_flags_unexpected_listener(self):
+        cache = appmod.DashboardCache()
+        check = {
+            "id": "pi4-port-drift",
+            "label": "Pi4 open-port drift",
+            "host": "Pi4",
+            "kind": "port-drift",
+            "allow": ["tcp/22", "udp/53"],
+            "ignoreUdpAbove": 20000,
+        }
+        stdout = "\n".join(
+            [
+                "tcp LISTEN 0 128 0.0.0.0:22 0.0.0.0:*",
+                "tcp LISTEN 0 128 127.0.0.1:9999 0.0.0.0:*",
+                "tcp LISTEN 0 128 0.0.0.0:9999 0.0.0.0:*",
+                "udp UNCONN 0 0 0.0.0.0:64210 0.0.0.0:*",
+                "udp UNCONN 0 0 *:53 *:*",
+            ]
+        )
+        proc = types.SimpleNamespace(returncode=0, stdout=stdout, stderr="")
+
+        with patch.object(appmod, "run_cmd", return_value=proc):
+            result = cache.port_drift_operation_check(check, time.monotonic())
+
+        self.assertEqual(result["status"], "warn")
+        self.assertEqual(result["unexpected"], ["tcp/9999"])
+
+    def test_remote_backup_operation_check_reports_recent_backup(self):
+        cache = appmod.DashboardCache()
+        check = {
+            "id": "offhost-backups",
+            "label": "Off-host backup freshness",
+            "host": "Pi5",
+            "kind": "remote-backup-recent",
+            "sshTarget": "pi5@example",
+            "path": "/home/pi5/backups/pi4",
+            "pattern": "pi4-backup-*.tgz",
+            "maxAgeHours": 72,
+        }
+        newest = time.time() - 600
+        proc = types.SimpleNamespace(returncode=0, stdout=f"ControlSocket already exists\n{newest} 4096 pi4-backup-current.tgz\n", stderr="")
+
+        with patch.object(appmod, "run_cmd", return_value=proc):
+            result = cache.remote_backup_operation_check(check, time.monotonic())
+
+        self.assertEqual(result["status"], "ok")
+        self.assertEqual(result["bytes"], 4096)
+
     def test_backup_operation_check_verifies_newest_backup_contents(self):
         cache = appmod.DashboardCache()
         with tempfile.TemporaryDirectory() as tmp:
@@ -486,6 +959,27 @@ class OpsCenterTests(unittest.TestCase):
 
         self.assertEqual(result["status"], "ok")
         self.assertEqual(result["entryCount"], 3)
+
+    def test_file_freshness_operation_check_reads_json_status(self):
+        cache = appmod.DashboardCache()
+        with tempfile.TemporaryDirectory() as tmp:
+            state = Path(tmp) / "last-restore-drill.json"
+            state.write_text('{"status":"ok"}', encoding="utf-8")
+            check = {
+                "id": "restore-drill-state",
+                "label": "Restore drill freshness",
+                "host": "Pi4/Pi5",
+                "kind": "file-freshness",
+                "path": str(state),
+                "maxAgeHours": 192,
+                "jsonField": "status",
+                "jsonEquals": "ok",
+            }
+
+            result = cache.file_freshness_operation_check(check, time.monotonic())
+
+        self.assertEqual(result["status"], "ok")
+        self.assertEqual(result["jsonValue"], "ok")
 
     def test_backup_artifacts_operation_check_reads_archives_and_checksums(self):
         cache = appmod.DashboardCache()
@@ -627,6 +1121,227 @@ class OpsCenterTests(unittest.TestCase):
         self.assertEqual(result["inodePct"], 4.0)
         self.assertFalse(result["readOnly"])
         self.assertIn("rw", result["message"])
+
+    def test_boot_state_lifecycle_distinguishes_unknown_clean_and_unclean(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            state_path = Path(tmp) / "state.json"
+            boot_id_path = Path(tmp) / "boot-id"
+            boot_id_path.write_text("boot-a\n", encoding="utf-8")
+
+            first = bootstate.mark_boot_started(state_path, boot_id_path, "2026-07-09T10:00:00-06:00")
+            self.assertIsNone(first["previousBootClean"])
+            self.assertFalse(first["currentBootClean"])
+            self.assertEqual(state_path.stat().st_mode & 0o777, 0o644)
+
+            clean = bootstate.mark_boot_clean(state_path, boot_id_path, "2026-07-09T11:00:00-06:00")
+            self.assertTrue(clean["currentBootClean"])
+
+            boot_id_path.write_text("boot-b\n", encoding="utf-8")
+            second = bootstate.mark_boot_started(state_path, boot_id_path, "2026-07-09T12:00:00-06:00")
+            self.assertTrue(second["previousBootClean"])
+            self.assertEqual(second["uncleanBootCount"], 0)
+
+            boot_id_path.write_text("boot-c\n", encoding="utf-8")
+            third = bootstate.mark_boot_started(state_path, boot_id_path, "2026-07-09T13:00:00-06:00")
+            self.assertFalse(third["previousBootClean"])
+            self.assertEqual(third["lastUncleanBootId"], "boot-b")
+            self.assertEqual(third["uncleanBootCount"], 1)
+
+    def test_boot_state_check_reports_initial_baseline_and_unclean_boot(self):
+        cache = appmod.DashboardCache()
+        with tempfile.TemporaryDirectory() as tmp:
+            state_path = Path(tmp) / "state.json"
+            boot_id_path = Path(tmp) / "boot-id"
+            boot_id_path.write_text("boot-current\n", encoding="utf-8")
+            check = {
+                "id": "pi4-boot-state",
+                "label": "Pi4 clean-shutdown state",
+                "kind": "boot-state",
+                "path": str(state_path),
+                "bootIdPath": str(boot_id_path),
+                "failureStatus": "fail",
+            }
+
+            state_path.write_text(json.dumps({"currentBootId": "boot-current", "currentBootClean": False, "previousBootClean": None}), encoding="utf-8")
+            baseline = cache.boot_state_operation_check(check, time.monotonic())
+            self.assertEqual(baseline["status"], "warn")
+            self.assertEqual(baseline["trackingState"], "baseline")
+
+            state_path.write_text(json.dumps({"currentBootId": "boot-current", "currentBootClean": False, "previousBootId": "boot-old", "previousBootClean": False, "uncleanBootCount": 1}), encoding="utf-8")
+            unclean = cache.boot_state_operation_check(check, time.monotonic())
+            self.assertEqual(unclean["status"], "fail")
+            self.assertEqual(unclean["trackingState"], "unclean")
+
+            state_path.write_text(json.dumps({"currentBootId": "boot-current", "currentBootClean": False, "previousBootId": "boot-old", "previousBootClean": True}), encoding="utf-8")
+            clean = cache.boot_state_operation_check(check, time.monotonic())
+            self.assertEqual(clean["status"], "ok")
+
+    def test_mount_operation_check_validates_source_filesystem_and_mode(self):
+        cache = appmod.DashboardCache()
+        check = {
+            "id": "data-hdd-mount",
+            "label": "Data HDD mount integrity",
+            "kind": "mount",
+            "path": "/mnt/ssd",
+            "expectedUuid": "b0a1a356-3c0e-4f68-9c80-3379f662b4bc",
+            "expectedFstype": "ext4",
+            "requireReadWrite": True,
+            "failureStatus": "fail",
+        }
+        healthy_proc = types.SimpleNamespace(
+            returncode=0,
+            stdout=json.dumps({"filesystems": [{"target": "/mnt/ssd", "source": "/dev/sda1", "fstype": "ext4", "options": "rw,noatime", "uuid": "b0a1a356-3c0e-4f68-9c80-3379f662b4bc"}]}),
+            stderr="",
+        )
+        wrong_proc = types.SimpleNamespace(
+            returncode=0,
+            stdout=json.dumps({"filesystems": [{"target": "/mnt/ssd", "source": "/dev/mmcblk0p2", "fstype": "ext4", "options": "ro", "uuid": "wrong"}]}),
+            stderr="",
+        )
+
+        with patch.object(appmod, "run_cmd", return_value=healthy_proc):
+            healthy = cache.mount_operation_check(check, time.monotonic())
+        with patch.object(appmod, "run_cmd", return_value=wrong_proc):
+            wrong = cache.mount_operation_check(check, time.monotonic())
+
+        self.assertEqual(healthy["status"], "ok")
+        self.assertEqual(healthy["source"], "/dev/sda1")
+        self.assertEqual(wrong["status"], "fail")
+        self.assertTrue(wrong["readOnly"])
+
+    def test_systemd_service_result_check_catches_failed_oneshot(self):
+        cache = appmod.DashboardCache()
+        check = {"id": "backup-service-result", "label": "Pi4 backup result", "kind": "systemd-service-result", "unit": "pi4-backup.service", "failureStatus": "fail"}
+        success_proc = types.SimpleNamespace(returncode=0, stdout="ActiveState=inactive\nSubState=dead\nResult=success\nExecMainStatus=0\nExecMainStartTimestamp=Thu 2026-07-09 02:20:00 MDT\nExecMainExitTimestamp=Thu 2026-07-09 02:21:00 MDT\n", stderr="")
+        failed_proc = types.SimpleNamespace(returncode=0, stdout="ActiveState=failed\nSubState=failed\nResult=exit-code\nExecMainStatus=1\nExecMainStartTimestamp=Thu 2026-07-09 02:20:00 MDT\nExecMainExitTimestamp=Thu 2026-07-09 02:20:02 MDT\n", stderr="")
+
+        with patch.object(appmod, "run_cmd", return_value=success_proc):
+            success = cache.systemd_service_result_operation_check(check, time.monotonic())
+        with patch.object(appmod, "run_cmd", return_value=failed_proc):
+            failed = cache.systemd_service_result_operation_check(check, time.monotonic())
+
+        self.assertEqual(success["status"], "ok")
+        self.assertEqual(failed["status"], "fail")
+        self.assertEqual(failed["exitStatus"], 1)
+
+    def test_remote_backup_parity_requires_every_local_artifact(self):
+        cache = appmod.DashboardCache()
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            archive = root / "pi4-backup-20260709T020000-0600.tgz"
+            checksum = root / f"{archive.name}.sha256"
+            archive.write_bytes(b"archive")
+            checksum.write_text("checksum\n", encoding="utf-8")
+            check = {
+                "id": "offhost-backup-parity",
+                "label": "Off-host backup parity",
+                "kind": "remote-backup-parity",
+                "localPath": str(root),
+                "remotePath": "/backups/pi4",
+                "pattern": "pi4-backup-*.tgz*",
+                "failureStatus": "warn",
+            }
+            mirrored_output = f"{archive.name}\t{archive.stat().st_size}\n{checksum.name}\t{checksum.stat().st_size}\n"
+            mirrored_proc = types.SimpleNamespace(returncode=0, stdout=mirrored_output, stderr="")
+            missing_proc = types.SimpleNamespace(returncode=0, stdout=f"{archive.name}\t{archive.stat().st_size}\n", stderr="")
+
+            with patch.object(cache, "ssh_run", return_value=mirrored_proc):
+                mirrored = cache.remote_backup_parity_operation_check(check, time.monotonic())
+            with patch.object(cache, "ssh_run", return_value=missing_proc):
+                missing = cache.remote_backup_parity_operation_check(check, time.monotonic())
+
+        self.assertEqual(mirrored["status"], "ok")
+        self.assertEqual(mirrored["backupSetCount"], 1)
+        self.assertEqual(missing["status"], "warn")
+        self.assertEqual(missing["missingRemote"], [checksum.name])
+
+    def test_smart_operation_check_handles_exit_bit_four_health_and_failures(self):
+        cache = appmod.DashboardCache()
+        check = {"id": "data-hdd-smart", "label": "Data HDD SMART health", "kind": "smart", "maxTempC": 50, "failureStatus": "fail", "unavailableStatus": "warn"}
+        healthy_data = {
+            "_pi4_noc": {"available": True, "exitStatus": 4},
+            "smart_status": {"passed": True},
+            "temperature": {"current": 38},
+            "ata_smart_attributes": {"table": [
+                {"id": 5, "raw": {"value": 0}},
+                {"id": 197, "raw": {"value": 0}},
+                {"id": 198, "raw": {"value": 0}},
+                {"id": 199, "raw": {"value": 0}},
+            ]},
+            "ata_smart_self_test_log": {"standard": {"table": [{"status": {"passed": True, "string": "Completed without error"}}]}},
+        }
+        failed_data = json.loads(json.dumps(healthy_data))
+        failed_data["ata_smart_attributes"]["table"][1]["raw"]["value"] = 2
+
+        with patch.object(appmod, "run_privileged_json", return_value=healthy_data):
+            healthy = cache.smart_operation_check(check, time.monotonic())
+        with patch.object(appmod, "run_privileged_json", return_value=failed_data):
+            failed = cache.smart_operation_check(check, time.monotonic())
+        with patch.object(appmod, "run_privileged_json", return_value={"_pi4_noc": {"available": False, "exitStatus": 2, "reason": "SMART unavailable"}}):
+            unavailable = cache.smart_operation_check(check, time.monotonic())
+
+        self.assertEqual(healthy["status"], "ok")
+        self.assertEqual(failed["status"], "fail")
+        self.assertEqual(failed["pendingSectors"], 2)
+        self.assertEqual(unavailable["status"], "warn")
+
+    def test_smart_helper_is_fixed_to_persistent_wwn_and_accepts_partial_exit_status(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            smartctl = Path(tmp) / "smartctl"
+            smartctl.write_text("", encoding="utf-8")
+            proc = types.SimpleNamespace(returncode=4, stdout=json.dumps({"smart_status": {"passed": True}, "ata_smart_attributes": {"table": []}}))
+            with patch.object(sudo_ops, "SMARTCTL", smartctl), patch.object(sudo_ops.subprocess, "run", return_value=proc) as mocked:
+                result = sudo_ops.smart_health()
+
+        argv = mocked.call_args.args[0]
+        self.assertEqual(argv[-1], "/dev/disk/by-id/wwn-0x50014ee2bebee4fe")
+        self.assertIn("sat", argv)
+        self.assertTrue(result["_pi4_noc"]["available"])
+
+    def test_smart_operation_check_preserves_drive_standby(self):
+        cache = appmod.DashboardCache()
+        check = {"id": "data-hdd-smart", "label": "Data HDD SMART health", "kind": "smart"}
+        data = {"_pi4_noc": {"available": True, "exitStatus": 0}, "power_mode": "STANDBY"}
+
+        with patch.object(appmod, "run_privileged_json", return_value=data):
+            result = cache.smart_operation_check(check, time.monotonic())
+
+        self.assertEqual(result["status"], "ok")
+        self.assertEqual(result["powerMode"], "standby")
+
+    def test_boot_and_smart_systemd_units_use_safe_fixed_commands(self):
+        scripts = Path(__file__).resolve().parent.parent / "scripts"
+        boot_unit = (scripts / "pi4-boot-state.service").read_text(encoding="utf-8")
+        short_unit = (scripts / "pi4-smart-short.service").read_text(encoding="utf-8")
+        short_timer = (scripts / "pi4-smart-short.timer").read_text(encoding="utf-8")
+        long_unit = (scripts / "pi4-smart-long.service").read_text(encoding="utf-8")
+        long_timer = (scripts / "pi4-smart-long.timer").read_text(encoding="utf-8")
+
+        self.assertIn("RefuseManualStop=yes", boot_unit)
+        self.assertIn("ExecStop=/usr/local/sbin/pi4-boot-state stop", boot_unit)
+        self.assertIn("ConditionFileIsExecutable=/usr/sbin/smartctl", short_unit)
+        self.assertNotIn("ConditionPathIsExecutable", short_unit)
+        self.assertIn("/usr/sbin/smartctl -d sat -t short /dev/disk/by-id/wwn-0x50014ee2bebee4fe", short_unit)
+        self.assertIn("OnCalendar=Sun *-*-* 04:30:00", short_timer)
+        self.assertIn("Persistent=false", short_timer)
+        self.assertIn("/usr/sbin/smartctl -d sat -t long /dev/disk/by-id/wwn-0x50014ee2bebee4fe", long_unit)
+        self.assertIn("ConditionFileIsExecutable=/usr/sbin/smartctl", long_unit)
+        self.assertNotIn("ConditionPathIsExecutable", long_unit)
+        self.assertIn("OnCalendar=*-*-01 05:30:00", long_timer)
+        self.assertIn("Persistent=false", long_timer)
+
+    def test_storage_snapshot_identifies_rotational_data_drive(self):
+        cache = appmod.DashboardCache()
+        cache.data_drive = {"label": "Data HDD", "media": "HDD", "model": "WDC", "device": "/dev/sda1", "rotational": True, "transport": "USB"}
+        root = types.SimpleNamespace(total=100 * 1024**3, used=20 * 1024**3)
+        data = types.SimpleNamespace(total=2000 * 1024**3, used=400 * 1024**3)
+        with patch.object(cache, "path_size_gb", return_value=300):
+            storage = cache.storage_snapshot(root, data)
+        cache.snapshot_data["STORAGE"] = storage
+
+        self.assertEqual(storage["ssd"]["media"], "HDD")
+        self.assertTrue(storage["ssd"]["rotational"])
+        self.assertEqual(next(row for row in cache.kpis() if row["id"] == "ssd")["label"], "Data HDD Used")
 
     def test_speed_operation_check_reports_sample_mbps(self):
         cache = appmod.DashboardCache()

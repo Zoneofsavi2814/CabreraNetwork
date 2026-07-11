@@ -1,0 +1,11 @@
+[Unit]
+Description=Start weekly short SMART self-test for the Pi4 data HDD
+ConditionFileIsExecutable=/usr/sbin/smartctl
+ConditionPathExists=/dev/disk/by-id/wwn-0x50014ee2bebee4fe
+
+[Service]
+Type=oneshot
+ExecStart=/usr/sbin/smartctl -d sat -t short /dev/disk/by-id/wwn-0x50014ee2bebee4fe
+Nice=10
+IOSchedulingClass=best-effort
+IOSchedulingPriority=7

@@ -1,0 +1,16 @@
+[Unit]
+Description=Persist Pi4 boot and clean-shutdown state
+After=local-fs.target
+Before=pi4-noc.service
+RefuseManualStop=yes
+
+[Service]
+Type=oneshot
+ExecStart=/usr/local/sbin/pi4-boot-state start
+ExecStop=/usr/local/sbin/pi4-boot-state stop
+RemainAfterExit=yes
+TimeoutStartSec=10s
+TimeoutStopSec=10s
+
+[Install]
+WantedBy=multi-user.target

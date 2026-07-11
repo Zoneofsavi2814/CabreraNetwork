@@ -1,0 +1,24 @@
+[Unit]
+Description=Cabrera Network durable alert relay
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=oneshot
+User=pi5
+Group=pi5
+UMask=0077
+EnvironmentFile=/etc/pi5-critical-alerts/notify.env
+Environment=CABRERA_ALERT_RELAY_DB=/var/lib/cabrera-alert-relay/outbox.sqlite3
+ExecStart=/opt/cabrera-alert-relay/cabrera-alert-relay.py --once
+StateDirectory=cabrera-alert-relay
+StateDirectoryMode=0750
+NoNewPrivileges=true
+PrivateTmp=true
+ProtectHome=true
+ProtectSystem=strict
+ReadWritePaths=/var/lib/cabrera-alert-relay
+TimeoutStartSec=50
+
+[Install]
+WantedBy=multi-user.target

@@ -170,7 +170,7 @@ class NotificationManager:
             self.state_path = state_dir / "notification-state.json"
 
     def configured(self) -> bool:
-        return self.email_configured() or self.webhook_configured() or self.dry_run()
+        return self.ntfy_configured() or self.email_configured() or self.webhook_configured() or self.dry_run()
 
     def dry_run(self) -> bool:
         return env_bool(self.env.get("PI4_NOC_NOTIFY_DRY_RUN"), default=False)
@@ -181,9 +181,18 @@ class NotificationManager:
     def webhook_configured(self) -> bool:
         return bool(self.env.get("PI4_NOC_NOTIFY_WEBHOOK_URL"))
 
+    def ntfy_configured(self) -> bool:
+        return bool(self.env.get("PI4_NOC_NOTIFY_NTFY_URL"))
+
     def critical_cooldown_seconds(self) -> float:
         try:
             return max(0.0, float(self.env.get("PI4_NOC_NOTIFY_CRITICAL_COOLDOWN_SECONDS", "1800")))
+        except ValueError:
+            return 1800.0
+
+    def morning_retry_seconds(self) -> float:
+        try:
+            return max(300.0, float(self.env.get("PI4_NOC_NOTIFY_MORNING_RETRY_SECONDS", "1800")))
         except ValueError:
             return 1800.0
 
@@ -220,8 +229,11 @@ class NotificationManager:
         state.setdefault("schemaVersion", 1)
         changed = False
 
-        if any(cfg.get("id") == "morning" for cfg in due_configs):
-            sent_morning, morning_changed = self._send_morning_if_needed(ops, due_configs, state, now)
+        morning_due = any(cfg.get("id") == "morning" for cfg in due_configs)
+        morning_retry = self._morning_retry_due(state, now)
+        if morning_due or morning_retry:
+            morning_configs = due_configs if morning_due else [{"id": "morning", "label": "Every morning (retry)"}]
+            sent_morning, morning_changed = self._send_morning_if_needed(ops, morning_configs, state, now)
             if sent_morning:
                 sent.append(sent_morning)
             changed = changed or morning_changed
@@ -236,18 +248,46 @@ class NotificationManager:
             self.save_state(state)
         return sent
 
+    def _morning_retry_due(self, state: dict, now: float) -> bool:
+        morning = state.get("morning") if isinstance(state.get("morning"), dict) else {}
+        today = datetime.fromtimestamp(now).strftime("%Y-%m-%d")
+        if morning.get("pendingDate") != today or morning.get("lastDate") == today:
+            return False
+        try:
+            last_attempt = datetime.fromisoformat(str(morning.get("lastAttemptAt") or "")).timestamp()
+        except Exception:
+            return True
+        return now - last_attempt >= self.morning_retry_seconds()
+
+    def _record_delivery(self, state: dict, kind: str, delivered: bool, now: float) -> None:
+        delivery = state.setdefault("delivery", {})
+        attempt_at = datetime.fromtimestamp(now).isoformat()
+        delivery["lastAttemptAt"] = attempt_at
+        delivery["lastType"] = kind
+        if delivered:
+            delivery["lastSuccessAt"] = attempt_at
+        else:
+            delivery["lastFailureAt"] = attempt_at
+
     def _send_morning_if_needed(self, ops: dict, due_configs: list[dict], state: dict, now: float) -> tuple[dict | None, bool]:
         morning = state.setdefault("morning", {})
         today = datetime.fromtimestamp(now).strftime("%Y-%m-%d")
         if morning.get("lastDate") == today:
             return None, False
+        if morning.get("pendingDate") == today and not self._morning_retry_due(state, now):
+            return None, False
         subject = morning_subject(ops)
         body = render_morning_body(ops, due_configs, now)
         delivered = self.send(subject, body, severity="morning")
         morning["lastAttemptAt"] = datetime.fromtimestamp(now).isoformat()
+        self._record_delivery(state, "morning", delivered, now)
         if delivered:
             morning["lastDate"] = today
+            morning["lastSuccessAt"] = morning["lastAttemptAt"]
+            morning.pop("pendingDate", None)
             return {"type": "morning", "subject": subject}, True
+        morning["lastFailureAt"] = morning["lastAttemptAt"]
+        morning["pendingDate"] = today
         return None, True
 
     def _send_critical_if_needed(self, ops: dict, state: dict, now: float) -> tuple[dict | None, bool]:
@@ -266,7 +306,14 @@ class NotificationManager:
         for key, row in by_key.items():
             previous = active.get(key, {}) if isinstance(active.get(key), dict) else {}
             last_sent = float(previous.get("lastSentAt") or 0)
-            if not previous or now - last_sent >= cooldown:
+            last_attempt = float(previous.get("lastAttemptEpoch") or 0)
+            if not last_attempt and previous.get("lastAttemptAt"):
+                try:
+                    last_attempt = datetime.fromisoformat(str(previous["lastAttemptAt"])).timestamp()
+                except (TypeError, ValueError):
+                    last_attempt = 0
+            last_activity = max(last_sent, last_attempt)
+            if not previous or now - last_activity >= cooldown:
                 alert_rows.append(row)
             entry = {
                 "id": row.get("id"),
@@ -278,6 +325,10 @@ class NotificationManager:
             }
             if previous.get("lastSentAt"):
                 entry["lastSentAt"] = previous.get("lastSentAt")
+            if previous.get("lastAttemptAt"):
+                entry["lastAttemptAt"] = previous.get("lastAttemptAt")
+            if previous.get("lastAttemptEpoch"):
+                entry["lastAttemptEpoch"] = previous.get("lastAttemptEpoch")
             next_active[key] = entry
 
         if set(active.keys()) != set(next_active.keys()):
@@ -289,9 +340,11 @@ class NotificationManager:
             body = render_critical_body(ops, alert_rows, now)
             delivered = self.send(subject, body, severity="critical")
             attempt_at = datetime.fromtimestamp(now).isoformat()
+            self._record_delivery(state, "critical", delivered, now)
             for row in alert_rows:
                 key = row["key"]
                 next_active[key]["lastAttemptAt"] = attempt_at
+                next_active[key]["lastAttemptEpoch"] = now
                 if delivered:
                     next_active[key]["lastSentAt"] = now
             if delivered:
@@ -313,6 +366,13 @@ class NotificationManager:
 
         attempted = False
         delivered = False
+        if self.ntfy_configured():
+            attempted = True
+            try:
+                self.send_ntfy(subject, body, severity=severity)
+                delivered = True
+            except Exception as exc:
+                print(f"pi4-noc ntfy notification failed: {redact(str(exc))}", flush=True)
         if self.email_configured():
             attempted = True
             try:
@@ -320,7 +380,7 @@ class NotificationManager:
                 delivered = True
             except Exception as exc:
                 print(f"pi4-noc email notification failed: {redact(str(exc))}", flush=True)
-        if self.webhook_configured():
+        if self.webhook_configured() and not delivered:
             attempted = True
             try:
                 self.send_webhook(subject, body, severity=severity)
@@ -328,6 +388,48 @@ class NotificationManager:
             except Exception as exc:
                 print(f"pi4-noc webhook notification failed: {redact(str(exc))}", flush=True)
         return delivered if attempted else False
+
+    def send_ntfy(self, subject: str, body: str, *, severity: str) -> None:
+        topic_url = self.env.get("PI4_NOC_NOTIFY_NTFY_URL", "").strip().rstrip("/")
+        parsed = urlparse.urlsplit(topic_url)
+        topic = parsed.path.strip("/")
+        if parsed.scheme != "https" or not parsed.netloc or not re.fullmatch(r"[-_A-Za-z0-9]{16,64}", topic):
+            raise ValueError("PI4_NOC_NOTIFY_NTFY_URL must be an HTTPS URL with a private 16-64 character topic")
+
+        def limited(value: str, max_bytes: int) -> str:
+            raw = value.encode("utf-8")
+            if len(raw) <= max_bytes:
+                return value
+            return raw[: max_bytes - 3].decode("utf-8", "ignore") + "..."
+
+        priority = 5 if severity == "critical" else 3
+        payload = {
+            "topic": topic,
+            "title": limited(subject, 200),
+            "message": limited(body, 3000),
+            "priority": priority,
+            "tags": ["rotating_light" if severity == "critical" else "house"],
+        }
+        click_url = self.env.get("PI4_NOC_NOTIFY_NTFY_CLICK_URL", "").strip()
+        if click_url:
+            payload["click"] = click_url
+
+        root_url = urlparse.urlunsplit((parsed.scheme, parsed.netloc, "/", "", ""))
+        headers = {
+            "Accept": "application/json",
+            "Content-Type": "application/json",
+            "User-Agent": "pi4-noc/notifications",
+        }
+        timeout = float(self.env.get("PI4_NOC_NOTIFY_NTFY_TIMEOUT_SECONDS", "10"))
+        req = urlrequest.Request(root_url, data=json.dumps(payload).encode("utf-8"), headers=headers, method="POST")
+        with urlrequest.urlopen(req, timeout=timeout) as resp:
+            raw = resp.read(65536)
+            status = resp.getcode() if hasattr(resp, "getcode") else 200
+            if status >= 400:
+                raise RuntimeError(f"ntfy returned HTTP {status}")
+            response = json.loads(raw.decode("utf-8", "replace") or "{}")
+            if not isinstance(response, dict) or response.get("event") not in {None, "message"}:
+                raise RuntimeError("ntfy returned an unexpected response")
 
     def send_email(self, subject: str, body: str) -> None:
         host = self.env.get("PI4_NOC_SMTP_HOST", "").strip()
@@ -410,7 +512,7 @@ class NotificationManager:
         else:
             data = json.dumps(payload).encode("utf-8")
             headers["Content-Type"] = "application/json"
-        timeout = float(self.env.get("PI4_NOC_NOTIFY_WEBHOOK_TIMEOUT_SECONDS", "10"))
+        timeout = float(self.env.get("PI4_NOC_NOTIFY_WEBHOOK_TIMEOUT_SECONDS", "30"))
         req = urlrequest.Request(url, data=data, headers=headers, method="POST")
         with urlrequest.urlopen(req, timeout=timeout) as resp:
             raw = resp.read(65536)
