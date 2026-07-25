@@ -211,7 +211,6 @@ const IconLegend = ({ open, onClose }) => {
     { name: "brandFolderNet", label: "Samba / NAS share" },
     { name: "brandTerminal",  label: "SSH" },
     { name: "brandSocket",    label: "Socket / API listener" },
-    { name: "brandHeartbeat", label: "Uptime Kuma" },
   ];
   return (
     <div className="icon-legend" style={{
@@ -1514,7 +1513,6 @@ const KBD_HINTS = {
   "adguard.open":    "⌘O",
   "k3s.restart":     "⌘⇧K",
   "k3s.events":      "⌘E",
-  "kuma.open":       "⌘U",
   "ssh.logs":        "⌘L",
   "smbd.restart":    "⌘⇧S",
   "refresh":         "R",

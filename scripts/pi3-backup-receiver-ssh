@@ -1,0 +1,38 @@
+#!/bin/bash
+set -eu
+
+umask 077
+export LANG=C
+export LC_ALL=C
+unset CDPATH ENV BASH_ENV PYTHONHOME PYTHONPATH
+
+original_command="${SSH_ORIGINAL_COMMAND-}"
+case " $original_command " in
+    *' --sender '*|*' --inplace '*|*' --append '*|*' --append-verify '*|*' --links '*|*' --copy-links '*|*' --copy-dirlinks '*|*' --hard-links '*|*' --devices '*|*' --specials '*|*' --super '*|*' --fake-super '*)
+        printf '%s\n' '{"schemaVersion":1,"error":{"code":"unsafe_rsync_mode","message":"links, special files, sender, append, and in-place modes are not allowed"}}'
+        exit 64
+        ;;
+esac
+
+case "$original_command" in
+    'rsync --server '*)
+        file_count="$(/usr/bin/find /mnt/ssd/backups/pi3/incoming -mindepth 1 -maxdepth 1 -printf '.\n' | /usr/bin/wc -l)"
+        byte_count="$(/usr/bin/find /mnt/ssd/backups/pi3/incoming -mindepth 1 -maxdepth 1 -type f -printf '%s\n' | /usr/bin/awk '{total += $1} END {print total + 0}')"
+        if [ "$file_count" -gt 12 ] || [ "$byte_count" -gt 4294967296 ]; then
+            printf '%s\n' '{"schemaVersion":1,"error":{"code":"incoming_quota","message":"incoming backup quota is already exceeded"}}'
+            exit 75
+        fi
+        # prlimit expresses RLIMIT_FSIZE in bytes, avoiding shell-specific
+        # ulimit block units.  -munge makes any compact-option symlink transfer
+        # unusable; the root claimant still rejects every non-regular or
+        # multi-link entry before parsing.
+        exec /usr/bin/prlimit --fsize=2147483648:2147483648 --nofile=64:64 -- \
+            /usr/bin/flock -n /mnt/ssd/backups/pi3/.upload.lock \
+            /usr/bin/timeout --signal=TERM --kill-after=30s 20m \
+            /usr/bin/rrsync -wo -no-del -munge /mnt/ssd/backups/pi3/incoming
+        ;;
+    *)
+        printf '%s\n' '{"schemaVersion":1,"error":{"code":"command_not_allowed","message":"only restricted rsync uploads are allowed"}}'
+        exit 64
+        ;;
+esac

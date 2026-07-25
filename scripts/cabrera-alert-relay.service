@@ -5,12 +5,12 @@ Wants=network-online.target
 
 [Service]
 Type=oneshot
-User=pi5
-Group=pi5
+User=pi4
+Group=pi4
 UMask=0077
-EnvironmentFile=/etc/pi5-critical-alerts/notify.env
+EnvironmentFile=/etc/pi4-noc/notify.env
 Environment=CABRERA_ALERT_RELAY_DB=/var/lib/cabrera-alert-relay/outbox.sqlite3
-ExecStart=/opt/cabrera-alert-relay/cabrera-alert-relay.py --once
+ExecStart=/opt/pi4-noc/scripts/cabrera-alert-relay.py --once
 StateDirectory=cabrera-alert-relay
 StateDirectoryMode=0750
 NoNewPrivileges=true

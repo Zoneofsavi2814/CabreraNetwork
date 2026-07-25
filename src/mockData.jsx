@@ -60,7 +60,6 @@ const KPIS = [
 const SERVICES = [
   { id: "adguard", label: "AdGuard Home",  unit: "AdGuardHome.service",         port: "53 · 8080", status: "ok", glyph: "brandShield",     ui: "http://192.168.0.101:8080" },
   { id: "k3s",     label: "k3s",           unit: "k3s.service",                 port: "6443",      status: "ok", glyph: "brandCubes" },
-  { id: "kuma",    label: "Uptime Kuma",   kind: "k3s", namespace: "homelab", workloadKind: "deployment", workload: "uptime-kuma", unit: "k3s · homelab/uptime-kuma", port: "3001",        status: "ok", glyph: "brandHeartbeat", ui: "http://192.168.0.101:3001" },
   { id: "grid",    label: "GRID",          kind: "k3s", namespace: "homelab", workloadKind: "deployment", workload: "grid",        unit: "k3s · homelab/grid",        port: "8090 · 7777", status: "ok", glyph: "globe",          ui: "http://192.168.0.101:8090" },
   { id: "smbd",    label: "Samba (smbd)",  unit: "smbd.service",                port: "445",       status: "ok", glyph: "brandFolderNet" },
   { id: "nmbd",    label: "Samba (nmbd)",  unit: "nmbd.service",                port: "139",       status: "ok", glyph: "brandFolderNet" },
@@ -70,7 +69,6 @@ const SERVICES = [
 const WEB_APPS = [
   { id: "cabrera-network", label: "Cabrera Network", url: "http://192.168.0.101/", port: "80", glyph: "activity", kind: "dashboard", status: "ok", statusLabel: "online" },
   { id: "adguard", label: "AdGuard Home", url: "http://192.168.0.101:8080/", port: "8080", glyph: "brandShield", kind: "admin", status: "ok", statusLabel: "online" },
-  { id: "uptime-kuma", label: "Uptime Kuma", url: "http://192.168.0.101:3001/", port: "3001", glyph: "brandHeartbeat", kind: "monitoring", status: "ok", statusLabel: "online" },
   { id: "grid-wiki", label: "GRID Wiki", url: "http://192.168.0.101:8090/", port: "8090", glyph: "globe", kind: "knowledge", status: "ok", statusLabel: "online" },
   { id: "grid-api", label: "GRID protected listener/API", url: "http://192.168.0.101:7777/", port: "7777", glyph: "brandSocket", kind: "api", status: "ok", statusLabel: "online" },
 ];
@@ -195,7 +193,7 @@ const OPS_CENTER = {
         { id: "wan-http", label: "WAN HTTPS reachability", host: "Internet", kind: "http", status: "ok", message: "HTTP 200", latencyMs: 58, href: "https://one.one.one.one/cdn-cgi/trace" },
         { id: "wan-latency", label: "WAN endpoint latency", host: "Internet", kind: "multi-http", status: "ok", message: "3/3 endpoints, avg 213ms", latencyMs: 641 },
         { id: "dns-latency", label: "DNS latency", host: "Pi4", kind: "multi-dns", status: "ok", message: "3/3 names, avg 34ms", latencyMs: 102 },
-        { id: "portfolio-api", label: "Portfolio API", host: "Pi5", kind: "http", status: "ok", message: "ok=true", latencyMs: 35, href: "https://raspberrypi5.tail83be27.ts.net/api/health" },
+        { id: "portfolio-api", label: "Portfolio API", host: "Pi5", kind: "http", status: "ok", message: "ok=true", latencyMs: 35, href: "https://ann-and-chris.tail83be27.ts.net:9443/api/health" },
       ],
     },
     {
@@ -212,7 +210,7 @@ const OPS_CENTER = {
         { id: "k3s-release", label: "k3s latest release", host: "GitHub", kind: "github-release", status: "ok", message: "latest v1.35.5+k3s1", latencyMs: 118, href: "https://github.com/k3s-io/k3s/releases/latest" },
         { id: "hourly-backups", label: "Backup verification", host: "Pi4", kind: "backup-recent", status: "ok", message: "newest 2.1h ago, 8 files, 128 KB", latencyMs: 4 },
         { id: "backup-artifacts", label: "Backup artifact integrity", host: "Pi4", kind: "backup-artifacts", status: "ok", message: "4 archives readable, 1 checksums verified, 2 external skipped", latencyMs: 26 },
-        { id: "pi4-k3s-apps", label: "Pi4 k3s apps", host: "Pi4 k3s", kind: "k3s-local", status: "ok", message: "4/4 workloads ready", latencyMs: 3 },
+        { id: "pi4-k3s-apps", label: "Pi4 k3s apps", host: "Pi4 k3s", kind: "k3s-local", status: "ok", message: "1/1 workloads ready", latencyMs: 3 },
         { id: "pi5-k3s-node", label: "Pi5 k3s node", host: "Pi5 k3s", kind: "ssh-k3s", status: "ok", message: "1/1 nodes ready", latencyMs: 164 },
         { id: "pi5-k3s-apps", label: "Pi5 k3s apps", host: "Pi5 k3s", kind: "ssh-k3s", status: "ok", message: "3/3 workloads ready", latencyMs: 184 },
       ],

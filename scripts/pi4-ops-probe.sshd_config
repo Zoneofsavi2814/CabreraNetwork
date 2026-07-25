@@ -1,0 +1,12 @@
+Match User pi4probe
+    AuthenticationMethods publickey
+    PasswordAuthentication no
+    KbdInteractiveAuthentication no
+    AuthorizedKeysFile /etc/ssh/authorized_keys/pi4probe
+    ForceCommand /usr/local/libexec/pi4-ops-probe-ssh
+    DisableForwarding yes
+    PermitTTY no
+    PermitUserRC no
+    X11Forwarding no
+
+Match all

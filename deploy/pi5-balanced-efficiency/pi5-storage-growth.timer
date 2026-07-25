@@ -1,0 +1,14 @@
+[Unit]
+Description=Run Raspberry Pi 5 storage growth checks hourly
+
+[Timer]
+OnBootSec=12min
+OnUnitActiveSec=1h
+RandomizedDelaySec=5m
+AccuracySec=1min
+Persistent=true
+Unit=pi5-storage-growth.service
+
+[Install]
+WantedBy=timers.target
+

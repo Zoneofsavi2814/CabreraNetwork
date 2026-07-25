@@ -1,0 +1,15 @@
+Host pi4-ops-probe
+    HostName 192.168.0.101
+    User pi4probe
+    Port 22
+    IdentityFile /etc/pi3-ops/pi4-probe-ed25519
+    IdentitiesOnly yes
+    BatchMode yes
+    PasswordAuthentication no
+    KbdInteractiveAuthentication no
+    StrictHostKeyChecking yes
+    UserKnownHostsFile /etc/pi3-ops/pi4-known-hosts
+    HostKeyAlgorithms ssh-ed25519
+    RequestTTY no
+    ClearAllForwardings yes
+    ForwardAgent no

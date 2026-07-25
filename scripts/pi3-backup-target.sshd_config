@@ -1,0 +1,12 @@
+Match User pi3backup
+    AuthenticationMethods publickey
+    PasswordAuthentication no
+    KbdInteractiveAuthentication no
+    AuthorizedKeysFile /etc/ssh/authorized_keys/pi3backup
+    ForceCommand /usr/local/libexec/pi3-backup-receiver-ssh
+    DisableForwarding yes
+    PermitTTY no
+    PermitUserRC no
+    X11Forwarding no
+
+Match all

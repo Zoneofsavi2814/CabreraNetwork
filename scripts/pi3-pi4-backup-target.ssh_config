@@ -1,0 +1,15 @@
+Host pi4-backup-target
+    HostName 192.168.0.101
+    User pi3backup
+    Port 22
+    IdentityFile /etc/pi3-backup/pi4-backup-ed25519
+    IdentitiesOnly yes
+    BatchMode yes
+    PasswordAuthentication no
+    KbdInteractiveAuthentication no
+    StrictHostKeyChecking yes
+    UserKnownHostsFile /etc/pi3-backup/pi4-known-hosts
+    HostKeyAlgorithms ssh-ed25519
+    RequestTTY no
+    ClearAllForwardings yes
+    ForwardAgent no

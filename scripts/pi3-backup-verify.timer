@@ -1,0 +1,11 @@
+[Unit]
+Description=Verify the latest nightly Pi3 backup
+
+[Timer]
+OnCalendar=*-*-* 02:10:00
+Persistent=true
+RandomizedDelaySec=2m
+Unit=pi3-backup-verify.service
+
+[Install]
+WantedBy=timers.target

@@ -5,10 +5,10 @@ umask 027
 
 BACKUP_ROOT="${PI4_BACKUP_ROOT:-/mnt/ssd/backups/pi4}"
 STATE_DIR="${PI4_BACKUP_STATE_DIR:-/var/lib/pi4-backup}"
-REMOTE="${PI4_BACKUP_REMOTE:-pi5@192.168.0.94:/home/pi5/backups/pi4}"
 LOCAL_RETENTION_DAYS="${PI4_BACKUP_LOCAL_RETENTION_DAYS:-14}"
-REMOTE_RETENTION_DAYS="${PI4_BACKUP_REMOTE_RETENTION_DAYS:-30}"
 K3S_DATA_DIR="${K3S_DATA_DIR:-/mnt/ssd/k3s}"
+APP_MANIFEST_DIR="${PI4_APP_MANIFEST_DIR:-/opt/cabrera-apps/manifests}"
+APP_IMAGE_DIR="${PI4_APP_IMAGE_DIR:-/mnt/ssd/backups/application-images}"
 STAMP="$(date +%Y%m%dT%H%M%S%z)"
 BACKUP_ID="pi4-backup-${STAMP}"
 
@@ -93,6 +93,22 @@ copy_kuma_state() {
   [[ "$(/usr/bin/sqlite3 "${destination}/kuma.db" 'PRAGMA quick_check;')" == "ok" ]] || fail "backed-up Uptime Kuma database failed quick_check"
 }
 
+copy_sqlite_tree() {
+  local source="$1"
+  local database="$2"
+  local destination="${PAYLOAD}${source}"
+  [[ -f "${source}/${database}" ]] || fail "missing SQLite database at ${source}/${database}"
+  [[ -x /usr/bin/sqlite3 ]] || fail "sqlite3 is required for a consistent ${database} backup"
+  mkdir -p "$destination"
+  rsync -a --numeric-ids \
+    --exclude="/${database}" \
+    --exclude="/${database}-wal" \
+    --exclude="/${database}-shm" \
+    "${source}/" "${destination}/"
+  /usr/bin/sqlite3 "${source}/${database}" ".backup '${destination}/${database}'"
+  [[ "$(/usr/bin/sqlite3 "${destination}/${database}" 'PRAGMA quick_check;')" == "ok" ]] || fail "backed-up ${database} failed quick_check"
+}
+
 write_inventory() {
   local inv="${PAYLOAD}/inventory"
   mkdir -p "$inv"
@@ -112,6 +128,9 @@ write_inventory() {
   vcgencmd get_throttled > "${inv}/vcgencmd-get-throttled.txt" 2>&1 || true
   vcgencmd measure_temp > "${inv}/vcgencmd-measure-temp.txt" 2>&1 || true
   ss -tuln > "${inv}/ss-tuln.txt" 2>&1 || true
+  /usr/local/bin/k3s ctr images list > "${inv}/k3s-images.txt" 2>&1 || true
+  /usr/local/bin/k3s ctr images check > "${inv}/k3s-image-content.txt" 2>&1 || true
+  sha256sum "${APP_IMAGE_DIR}"/*.tar.gz > "${inv}/retained-image-archives.sha256" 2>/dev/null || true
 }
 
 write_k3s_exports() {
@@ -131,22 +150,6 @@ write_k3s_exports() {
   fi
 }
 
-sync_remote() {
-  local archive="$1"
-  local checksum="$2"
-  [[ -n "$REMOTE" ]] || return 0
-  if [[ "$REMOTE" != *:* ]]; then
-    warn "PI4_BACKUP_REMOTE must be host:path, got ${REMOTE}"
-    return 0
-  fi
-  local remote_host="${REMOTE%%:*}"
-  local remote_path="${REMOTE#*:}"
-  sudo -u pi4 ssh -o BatchMode=yes -o ConnectTimeout=8 "$remote_host" "install -d -m 0700 '$remote_path'"
-  sudo -u pi4 rsync -a --chmod=F600,D700 "$archive" "$checksum" "${REMOTE%/}/"
-  sudo -u pi4 ssh -o BatchMode=yes -o ConnectTimeout=8 "$remote_host" \
-    "find '$remote_path' -type f \\( -name 'pi4-backup-*.tgz' -o -name 'pi4-backup-*.tgz.sha256' \\) -mtime +${REMOTE_RETENTION_DAYS} -delete"
-}
-
 log "collecting ${BACKUP_ID}"
 write_inventory
 write_k3s_exports
@@ -160,10 +163,29 @@ copy_required /etc/rancher/k3s
 copy_required /etc/systemd/system/k3s.service.d
 copy_required /etc/systemd/system/mnt-nas-brain.mount
 copy_required /etc/systemd/system/pi4-noc.service
+copy_required /etc/systemd/system/cabrera-alert-relay.service
+copy_required /etc/systemd/system/cabrera-alert-relay.timer
+copy_required /etc/systemd/system/cabrera-portfolio.service
+copy_required /etc/systemd/system/cabrera-programs.service
 copy_required /etc/samba
+copy_required /etc/pi4-noc
+copy_required /etc/cabrera-portfolio
+copy_required /etc/cabrera-programs
 copy_adguard_state
 copy_required /mnt/nas/brain
 copy_required /var/lib/grid
+copy_required /var/lib/cabrera-portfolio
+copy_required /var/lib/cabrera-programs
+copy_if_exists "${STATE_DIR}/pi5-application-soak.json"
+copy_sqlite_tree /var/lib/cabrera-alert-relay outbox.sqlite3
+copy_sqlite_tree /mnt/ssd/apps/eagleeye eagleeye.db
+copy_required /home/pi4/.kube/cabrera-programs.yaml
+copy_required /opt/pi4-noc
+copy_required /opt/cabrera-portfolio
+copy_required /opt/cabrera-programs
+copy_required "$APP_MANIFEST_DIR"
+copy_required "${APP_IMAGE_DIR}/retained-k3s-images.tar.gz.sha256"
+copy_required /var/lib/tailscale
 copy_required /mnt/ssd/registry
 copy_kuma_state
 
@@ -180,12 +202,10 @@ chmod 0640 "$CHECKSUM"
 chown root:pi4 "$CHECKSUM"
 tar -tzf "$ARCHIVE" >/dev/null
 
-sync_remote "$ARCHIVE" "$CHECKSUM"
-
 find "$BACKUP_ROOT" -maxdepth 1 -type f \( -name 'pi4-backup-*.tgz' -o -name 'pi4-backup-*.tgz.sha256' \) -mtime +"$LOCAL_RETENTION_DAYS" -delete
 
 cat > "${STATE_DIR}/last-backup.json" <<EOF
-{"backup_id":"${BACKUP_ID}","created_at":"$(date -Is)","archive":"${ARCHIVE}","remote":"${REMOTE}"}
+{"backup_id":"${BACKUP_ID}","created_at":"$(date -Is)","archive":"${ARCHIVE}","scope":"pi4-local-only"}
 EOF
 chmod 0640 "${STATE_DIR}/last-backup.json"
 chown root:pi4 "${STATE_DIR}/last-backup.json"

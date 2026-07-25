@@ -1,7 +1,7 @@
 [Unit]
-Description=Pi4 off-host restore drill
-Wants=network-online.target
-After=network-online.target
+Description=Pi4 isolated local restore drill
+After=mnt-ssd.mount
+RequiresMountsFor=/mnt/ssd
 
 [Service]
 Type=oneshot

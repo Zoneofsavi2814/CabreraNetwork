@@ -1,0 +1,4 @@
+Defaults:pi4probe env_reset
+Defaults:pi4probe secure_path=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin
+
+pi4probe ALL=(root) NOPASSWD: /usr/local/libexec/pi4-ops-probe --cadence five-minute, /usr/local/libexec/pi4-ops-probe --cadence hourly, /usr/local/libexec/pi4-ops-probe --cadence morning, /usr/local/libexec/pi4-ops-probe --cadence nightly
