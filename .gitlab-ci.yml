@@ -9,7 +9,6 @@ workflow:
 stages:
   - test
   - build
-  - deploy
 
 default:
   tags:
@@ -67,53 +66,3 @@ frontend:build:
     paths:
       - dist/
     expire_in: 1 week
-
-deploy:rp4-dashboard:
-  stage: deploy
-  tags:
-    - jetson-deploy
-  needs:
-    - job: python:test
-      artifacts: false
-    - job: frontend:build
-      artifacts: true
-  rules:
-    - if: '$CI_PIPELINE_SOURCE == "push" && $CI_COMMIT_BRANCH == "main"'
-    - when: never
-  resource_group: rp4
-  interruptible: false
-  timeout: 30m
-  variables:
-    PI4_DEPLOY_DIR: "/home/pi4/cabrera-network-deploy/CabreraNetwork"
-  environment:
-    name: production/rp4-dashboard
-    url: http://192.168.0.101/
-  script:
-    - test -s dist/index.html
-    - ssh rp4 "sudo -n true && install -d -m 0755 '$PI4_DEPLOY_DIR'"
-    - >-
-      rsync -az --delete
-      --exclude='.git/'
-      --exclude='node_modules/'
-      --exclude='.cache/'
-      --exclude='.npm/'
-      "$CI_PROJECT_DIR/"
-      "rp4:$PI4_DEPLOY_DIR/"
-    - ssh rp4 "cd '$PI4_DEPLOY_DIR' && test -s dist/index.html && ./scripts/install-pi.sh"
-    - ssh rp4 'sudo -n systemctl is-active --quiet pi4-noc.service'
-    - |
-      ready=0
-      for attempt in $(seq 1 30); do
-        if curl -fsS http://192.168.0.101/ >/dev/null; then
-          ready=1
-          break
-        fi
-        sleep 2
-      done
-      test "$ready" = 1
-    - curl -fsS http://192.168.0.101/api/session | jq -e '.authenticated == false and .user == null' >/dev/null
-    - test "$(curl -sS -o /dev/null -w '%{http_code}' http://192.168.0.101/api/snapshot)" = 401
-    - |
-      local_sha="$(sha256sum dist/index.html | cut -d ' ' -f 1)"
-      remote_sha="$(ssh rp4 "sha256sum /opt/pi4-noc/dist/index.html | cut -d ' ' -f 1")"
-      test "$local_sha" = "$remote_sha"
