@@ -126,6 +126,8 @@ def ops_snapshot(*checks):
 
 
 def ops_check(id_, status, message="detail", label=None, host="Pi4"):
+    # Synthetic values in legacy handler tests below are not current monitor
+    # targets; the live contract is asserted from OPS_CHECK_CONFIG above.
     return {
         "id": id_,
         "label": label or id_.replace("-", " ").title(),
@@ -157,114 +159,224 @@ def ssh_portfolio_check():
 
 
 class OpsCenterTests(unittest.TestCase):
-    def test_portfolio_health_separates_api_from_tailnet_access(self):
+    def test_frontend_systemd_allowlist_is_covered_by_sudo_helper(self):
+        expected = {"cabrera-portfolio.service", "cabrera-programs.service"}
+
+        self.assertTrue(expected.issubset(appmod.ALLOWED_UNITS))
+        self.assertTrue(appmod.ALLOWED_UNITS.issubset(sudo_ops.ALLOWED_UNITS))
+
+    def test_sudo_helper_allows_cabrera_units_for_logs_and_restart(self):
+        for unit in ("cabrera-portfolio.service", "cabrera-programs.service"):
+            with self.subTest(unit=unit):
+                with patch.object(sudo_ops, "run", return_value="output") as mocked:
+                    sudo_ops.main(["sudo_ops.py", "journal", unit, "180"])
+                self.assertEqual(
+                    mocked.call_args.args[0],
+                    ["/usr/bin/journalctl", "-u", unit, "-n", "180", "--no-pager", "-o", "short-iso"],
+                )
+
+                with patch.object(sudo_ops, "run", return_value="") as mocked:
+                    sudo_ops.main(["sudo_ops.py", "systemd_restart", unit])
+                self.assertEqual(mocked.call_args.args[0], ["/usr/bin/systemctl", "restart", unit])
+
+    def test_dashboard_logs_and_restart_route_use_the_narrow_helper(self):
+        for unit in ("cabrera-portfolio.service", "cabrera-programs.service"):
+            with self.subTest(unit=unit):
+                fake_request = types.SimpleNamespace(
+                    args={"sourceType": "systemd", "id": unit, "lines": "180"},
+                )
+                with patch.object(appmod, "request", fake_request), patch.object(
+                    appmod, "run_privileged_text", return_value="journal output"
+                ) as logs:
+                    response = appmod.api_logs()
+                self.assertEqual(response["text"], "journal output")
+                logs.assert_called_once_with(["journal", unit, "180"], timeout=20)
+
+                jobs = appmod.ActionJobs(appmod.DashboardCache())
+                payload = {"type": "systemd", "action": "restart", "unit": unit}
+                jobs.validate(payload)
+                proc = types.SimpleNamespace(returncode=0, stdout="restarted\n")
+                with patch.object(appmod, "run_privileged", return_value=proc) as restart:
+                    self.assertEqual(jobs.execute(payload), "restarted\n")
+                restart.assert_called_once_with(["systemd_restart", unit], timeout=45)
+
+    def test_login_throttle_ignores_forwarded_for_without_trusted_proxy(self):
+        fake_request = types.SimpleNamespace(
+            remote_addr="192.0.2.20",
+            headers={"X-Forwarded-For": "198.51.100.8"},
+        )
+        with patch.object(appmod, "request", fake_request), patch.object(appmod, "TRUSTED_PROXY_NETWORKS", ()):
+            self.assertEqual(appmod.login_client_key(), "192.0.2.20")
+
+    def test_login_throttle_accepts_only_validated_forwarded_chain(self):
+        fake_request = types.SimpleNamespace(
+            remote_addr="127.0.0.1",
+            headers={"X-Forwarded-For": "198.51.100.8"},
+        )
+        with patch.object(
+            appmod,
+            "request",
+            fake_request,
+        ), patch.object(appmod, "TRUSTED_PROXY_NETWORKS", (appmod.ipaddress.ip_network("127.0.0.1/32"),)), patch.object(
+            appmod, "TRUSTED_PROXY_HOPS", 1
+        ):
+            self.assertEqual(appmod.login_client_key(), "198.51.100.8")
+            fake_request.headers["X-Forwarded-For"] = "not-an-ip"
+            self.assertEqual(appmod.login_client_key(), "127.0.0.1")
+
+    def test_trusted_proxy_configuration_fails_closed_on_malformed_entry(self):
+        self.assertEqual(appmod.parse_trusted_proxy_networks("127.0.0.1,not-an-ip"), ())
+        self.assertEqual(
+            appmod.parse_trusted_proxy_networks("127.0.0.1"),
+            (appmod.ipaddress.ip_network("127.0.0.1/32"),),
+        )
+
+    def test_login_rejects_plaintext_request_before_pam(self):
+        fake_request = types.SimpleNamespace(
+            remote_addr="192.0.2.20",
+            headers={},
+            is_secure=False,
+            get_json=lambda **kwargs: {"password": "secret"},
+        )
+        with patch.object(appmod, "request", fake_request), patch.object(appmod, "verify_login_password") as verify:
+            response, status = appmod.api_login()
+
+        self.assertEqual(status, 400)
+        self.assertIn("HTTPS", response["error"])
+        verify.assert_not_called()
+
+    def test_login_allows_direct_https_request(self):
+        fake_request = types.SimpleNamespace(
+            remote_addr="192.0.2.20",
+            headers={},
+            is_secure=True,
+            get_json=lambda **kwargs: {"password": "secret"},
+        )
+        fake_session = {}
+        with patch.object(appmod, "request", fake_request), patch.object(appmod, "session", fake_session), patch.object(
+            appmod, "verify_login_password", return_value=True
+        ):
+            response = appmod.api_login()
+
+        self.assertTrue(response["authenticated"])
+        self.assertEqual(fake_session["user"], appmod.AUTH_USER)
+
+    def test_login_allows_https_forwarded_by_configured_proxy(self):
+        fake_request = types.SimpleNamespace(
+            remote_addr="127.0.0.1",
+            headers={"X-Forwarded-For": "198.51.100.8", "X-Forwarded-Proto": "https"},
+            is_secure=False,
+            get_json=lambda **kwargs: {"password": "secret"},
+        )
+        fake_session = {}
+        with patch.object(appmod, "request", fake_request), patch.object(appmod, "session", fake_session), patch.object(
+            appmod, "TRUSTED_PROXY_NETWORKS", (appmod.ipaddress.ip_network("127.0.0.1/32"),)
+        ), patch.object(appmod, "TRUSTED_PROXY_HOPS", 1), patch.object(
+            appmod, "verify_login_password", return_value=True
+        ):
+            response = appmod.api_login()
+
+        self.assertTrue(response["authenticated"])
+        self.assertEqual(fake_session["user"], appmod.AUTH_USER)
+
+    def test_non_loopback_bind_without_tls_fails_closed(self):
+        args = types.SimpleNamespace(host="0.0.0.0", port=80, debug=False)
+        with patch.object(appmod, "parse_args", return_value=args), patch.object(appmod, "TLS_CERT_FILE", ""), patch.object(
+            appmod, "TLS_KEY_FILE", ""
+        ), patch.object(appmod.cache, "start") as start:
+            with self.assertRaisesRegex(RuntimeError, "without TLS"):
+                appmod.main()
+        start.assert_not_called()
+
+    def test_service_template_defaults_to_loopback_boundary(self):
+        unit = (Path(__file__).resolve().parent.parent / "scripts" / "pi4-noc.service").read_text(encoding="utf-8")
+        self.assertIn("Environment=PI4_NOC_HOST=127.0.0.1", unit)
+        self.assertIn("Environment=PI4_NOC_PORT=8080", unit)
+        self.assertNotIn("--host 0.0.0.0 --port 80", unit)
+
+    def test_empty_dashboard_snapshot_is_loading_until_initial_refresh(self):
+        cache = appmod.DashboardCache()
+        self.assertEqual(cache.snapshot()["META"]["state"], "loading")
+
+        with patch.object(cache, "_run_refreshes", return_value=True):
+            cache._initial_refresh()
+
+        self.assertEqual(cache.snapshot()["META"]["state"], "ready")
+
+    def test_macmini_monitor_contract_uses_current_topology(self):
         checks = {check["id"]: check for check in appmod.OPS_CHECK_CONFIG["five-minute"]}
-        portfolio = checks["portfolio-api"]
-        tailnet = checks["portfolio-tailnet"]
+        self.assertEqual(
+            set(checks),
+            {
+                "gateway",
+                "dns-resolver",
+                "wan-http",
+                "wan-latency",
+                "dns-latency",
+                "macminiops",
+                "grid-web",
+                "grid-mcp",
+                "wedding-public",
+                "work",
+                "portfolio",
+            },
+        )
+        self.assertEqual(checks["macminiops"]["url"], appmod.MACMINIOPS_HEALTH_URL)
+        self.assertEqual(checks["grid-web"]["url"], appmod.GRID_WEB_HEALTH_URL)
+        self.assertEqual(checks["grid-mcp"]["url"], appmod.GRID_MCP_HEALTH_URL)
+        self.assertEqual(checks["grid-mcp"]["okStatuses"], [401])
+        self.assertEqual(checks["work"]["url"], appmod.WORK_HEALTH_URL)
+        self.assertEqual(checks["portfolio"]["url"], appmod.PORTFOLIO_HEALTH_URL)
+        self.assertEqual(checks["portfolio"]["attempts"], 2)
 
-        self.assertEqual(portfolio["kind"], "http")
-        self.assertEqual(portfolio["url"], "http://127.0.0.1:8099/api/health")
-        self.assertEqual(portfolio["attempts"], 2)
-        self.assertEqual(portfolio["failureStatus"], "fail")
-        self.assertNotIn("sshTarget", portfolio)
-
-        self.assertEqual(tailnet["kind"], "http")
-        self.assertEqual(tailnet["url"], appmod.PORTFOLIO_TAILNET_HEALTH_URL)
-        self.assertEqual(tailnet["url"], "https://ann-and-chris.tail83be27.ts.net:9443/api/health")
-        self.assertEqual(tailnet["attempts"], 2)
-        self.assertEqual(tailnet["failureStatus"], "warn")
+        serialized = repr(appmod.OPS_CHECK_CONFIG)
+        for stale in ("192.168.0.94", "192.168.0.101", "coinbot", "eagleeye"):
+            self.assertNotIn(stale, serialized)
 
     def test_ops_config_covers_required_cadence_work(self):
         five_minute_ids = {check["id"] for check in appmod.OPS_CHECK_CONFIG["five-minute"]}
         hourly_ids = {check["id"] for check in appmod.OPS_CHECK_CONFIG["hourly"]}
         nightly_ids = {check["id"] for check in appmod.OPS_CHECK_CONFIG["nightly"]}
 
-        self.assertTrue(
+        self.assertEqual(
+            five_minute_ids,
             {
                 "gateway",
                 "dns-resolver",
-                "pi4-power-throttle",
-                "pi4-boot-state",
                 "wan-http",
                 "wan-latency",
                 "dns-latency",
+                "macminiops",
+                "grid-web",
+                "grid-mcp",
                 "wedding-public",
-                "eagleeye",
-                "work-website",
-                "programs",
-                "portfolio-api",
-                "portfolio-tailnet",
-            }.issubset(five_minute_ids)
+                "work",
+                "portfolio",
+            },
         )
-        self.assertTrue(
-            {
-                "wan-speed",
-                "k3s-release",
-                "hourly-backups",
-                "backup-artifacts",
-                "pi4-k3s-resources",
-                "pi4-wedding-resources",
-                "pi4-eagleeye-resources",
-                "pi4-work-website-resources",
-                "pi4-port-drift",
-            }.issubset(hourly_ids)
-        )
-        self.assertTrue(
-            {
-                "logrotate-timer",
-                "log2ram-flush",
-                "tmpfiles-clean",
-                "dpkg-backup",
-                "pi4-backup-timer",
-                "restore-drill-timer",
-                "restore-drill-state",
-                "backup-service-result",
-                "restore-drill-service-result",
-                "filesystem-trim",
-                "kernel-io-health",
-                "root-disk",
-                "data-hdd-disk",
-                "data-hdd-mount",
-                "data-hdd-smart",
-                "data-hdd-smart-short-timer",
-                "data-hdd-smart-long-timer",
-                "brain-mount",
-                "brain-freshness",
-                "brain-vault-parity",
-                "grid-vault-sync",
-                "backup-retention",
-            }.issubset(nightly_ids)
-        )
+        self.assertEqual(hourly_ids, {"wan-speed", "k3s-release"})
+        self.assertEqual({check["id"] for check in appmod.OPS_CHECK_CONFIG["morning"]}, {"brief"})
+        self.assertEqual(nightly_ids, set())
         self.assertEqual(appmod.OPS_CADENCE_CONFIG[2]["scheduleTime"], "07:00")
         self.assertEqual(appmod.OPS_CADENCE_CONFIG[3]["scheduleTime"], "23:55")
 
-    def test_retired_pi4_workloads_are_not_expected(self):
-        five_minute = {check["id"]: check for check in appmod.OPS_CHECK_CONFIG["five-minute"]}
-        hourly = {check["id"]: check for check in appmod.OPS_CHECK_CONFIG["hourly"]}
-        units = {unit["id"]: unit for unit in appmod.UNIT_CONFIG}
-        web_apps = {web_app["id"]: web_app for web_app in appmod.WEB_APP_CONFIG}
-
-        self.assertNotIn("uptime-kuma", five_minute)
-        self.assertNotIn("uptime-kuma", web_apps)
-        self.assertNotIn("kuma", units)
-        self.assertNotIn("local-registry", hourly)
-        self.assertEqual(
-            hourly["pi4-k3s-apps"]["workloads"],
-            ["grid", "wedding-website", "eagleeye", "cabrera-work-website"],
-        )
-        self.assertEqual(hourly["pi4-k3s-resources"]["workloads"], ["grid"])
-        for retired in (
-            "offhost-backups",
-            "offhost-backup-parity",
-            "pi5-k3s-node",
-            "pi5-k3s-apps",
-            "pi5-systemd-failures",
-            "pi5-portfolio-sync-timer",
-            "pi5-tailscale",
-            "pi5-system-headroom",
-            "pi5-package-upgrades",
+    def test_retired_non_wedding_targets_are_not_current_monitors(self):
+        all_checks = [check for cadence in appmod.OPS_CHECK_CONFIG.values() for check in cadence]
+        serialized = repr(all_checks)
+        for stale in (
+            "pi4 k3s",
+            "pi4-noc",
+            "pi5",
+            "192.168.0.94",
+            "192.168.0.101",
+            "coinbot",
+            "eagleeye",
+            "cabrera-programs",
+            "portfolio-api",
+            "portfolio-tailnet",
+            "work-website",
         ):
-            self.assertNotIn(retired, hourly)
+            self.assertNotIn(stale, serialized.lower())
 
     def test_daily_schedule_helpers_keep_morning_wall_clock(self):
         base = datetime_from_parts(2026, 7, 5, 2, 30)
@@ -701,11 +813,11 @@ class OpsCenterTests(unittest.TestCase):
     def test_http_operation_check_warns_on_degraded_json(self):
         cache = appmod.DashboardCache()
         check = {
-            "id": "coinbot",
-            "label": "Coinbot",
-            "host": "Pi5 k3s",
+            "id": "fixture-http",
+            "label": "Fixture HTTP",
+            "host": "fixture",
             "kind": "http",
-            "url": "http://example.test/health",
+            "url": "https://monitor.test/health",
             "jsonField": "status",
             "jsonEquals": "ok",
             "warnJsonField": "degraded",
@@ -718,14 +830,35 @@ class OpsCenterTests(unittest.TestCase):
         self.assertEqual(result["httpStatus"], 200)
         self.assertIn("degraded", result["message"])
 
+    def test_http_operation_check_accepts_configured_http_error_status(self):
+        cache = appmod.DashboardCache()
+        check = {
+            "id": "grid-mcp",
+            "label": "GRID MCP auth boundary",
+            "host": "Mac mini",
+            "kind": "http",
+            "url": appmod.GRID_MCP_HEALTH_URL,
+            "okStatuses": [401],
+        }
+
+        with patch.object(
+            appmod,
+            "open_ops_url",
+            side_effect=appmod.urlerror.HTTPError(check["url"], 401, "Unauthorized", {}, None),
+        ):
+            result = cache.http_operation_check(check, time.monotonic())
+
+        self.assertEqual(result["status"], "ok")
+        self.assertEqual(result["httpStatus"], 401)
+
     def test_http_operation_check_retries_transient_failure(self):
         cache = appmod.DashboardCache()
         check = {
-            "id": "portfolio-tailnet",
-            "label": "Portfolio Tailscale access",
-            "host": "Pi5 tailnet",
+            "id": "fixture-http",
+            "label": "Fixture HTTP",
+            "host": "fixture",
             "kind": "http",
-            "url": "https://portfolio.test/api/health",
+            "url": "https://monitor.test/api/health",
             "jsonField": "ok",
             "jsonEquals": True,
             "attempts": 2,
@@ -747,11 +880,11 @@ class OpsCenterTests(unittest.TestCase):
     def test_http_operation_check_exhausts_retries_as_warning(self):
         cache = appmod.DashboardCache()
         check = {
-            "id": "portfolio-tailnet",
-            "label": "Portfolio Tailscale access",
-            "host": "Pi5 tailnet",
+            "id": "fixture-http",
+            "label": "Fixture HTTP",
+            "host": "fixture",
             "kind": "http",
-            "url": "https://portfolio.test/api/health",
+            "url": "https://monitor.test/api/health",
             "attempts": 2,
             "retryDelay": 0,
             "failureStatus": "warn",

@@ -12,6 +12,8 @@ SMART_DEVICE = "/dev/disk/by-id/wwn-0x50014ee2bebee4fe"
 ALLOWED_UNITS = {
     "AdGuardHome.service",
     "k3s.service",
+    "cabrera-portfolio.service",
+    "cabrera-programs.service",
     "smbd.service",
     "nmbd.service",
     "ssh.service",

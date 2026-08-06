@@ -74,14 +74,12 @@ DIST_DIR = Path(os.environ.get("PI4_NOC_DIST", APP_ROOT / "dist"))
 SUDO_HELPER = Path(os.environ.get("PI4_NOC_SUDO_HELPER", APP_ROOT / "server" / "sudo_ops.py"))
 ADGUARD_CREDS = Path(os.environ.get("PI4_NOC_ADGUARD_CREDS", "/home/pi4/.adguard-home-admin"))
 LAN_IP = os.environ.get("PI4_NOC_LAN_IP", "192.168.0.101")
-PORTFOLIO_TAILNET_HEALTH_URL = os.environ.get(
-    "PI4_NOC_PORTFOLIO_HEALTH_URL",
-    "https://ann-and-chris.tail83be27.ts.net:9443/api/health",
-)
-PORTFOLIO_LOOPBACK_HEALTH_URL = os.environ.get(
-    "PI4_NOC_PORTFOLIO_LOOPBACK_HEALTH_URL",
-    "http://127.0.0.1:8099/api/health",
-)
+MACMINI_TAILNET_BASE = "https://macmini.tail83be27.ts.net"
+MACMINIOPS_HEALTH_URL = f"{MACMINI_TAILNET_BASE}/healthz"
+GRID_WEB_HEALTH_URL = f"{MACMINI_TAILNET_BASE}:8090/healthz"
+GRID_MCP_HEALTH_URL = f"{MACMINI_TAILNET_BASE}:7777/healthz"
+WORK_HEALTH_URL = f"{MACMINI_TAILNET_BASE}:8081/healthz"
+PORTFOLIO_HEALTH_URL = f"{MACMINI_TAILNET_BASE}:9443/api/health"
 WEDDING_PUBLIC_HEALTH_URL = os.environ.get(
     "PI4_NOC_WEDDING_HEALTH_URL",
     "https://ann-and-chris.tail83be27.ts.net/healthz",
@@ -100,6 +98,9 @@ AUTH_SERVICE = os.environ.get("PI4_NOC_AUTH_SERVICE", "login")
 SESSION_SECRET_FILE = Path(os.environ.get("PI4_NOC_SESSION_SECRET_FILE", "/etc/pi4-noc/session-secret"))
 BOOT_STATE_FILE = Path(os.environ.get("PI4_NOC_BOOT_STATE_FILE", "/var/lib/pi4-boot-state/state.json"))
 BOOT_ID_FILE = Path(os.environ.get("PI4_NOC_BOOT_ID_FILE", "/proc/sys/kernel/random/boot_id"))
+PI4_NOC_PUBLIC_URL = os.environ.get("PI4_NOC_PUBLIC_URL", f"https://{LAN_IP}").rstrip("/")
+TLS_CERT_FILE = os.environ.get("PI4_NOC_TLS_CERT_FILE", "").strip()
+TLS_KEY_FILE = os.environ.get("PI4_NOC_TLS_KEY_FILE", "").strip()
 HISTORY_LEN = 60
 DATA_FS_UUID = os.environ.get("PI4_NOC_DATA_FS_UUID", "b0a1a356-3c0e-4f68-9c80-3379f662b4bc")
 HOT_REFRESH_SECONDS = bounded_refresh_seconds("PI4_NOC_HOT_REFRESH_SECONDS", 2, 1, 60)
@@ -130,28 +131,31 @@ NAME_SOURCE_RANK = {"router": 60, "configured_ap": 55, "adguard": 45, "resolved"
 LINK_SOURCE_RANK = {"router": 60, "configured_ap": 55, "adguard": 15, "resolved": 10, "arp": 5}
 
 UNIT_CONFIG = [
-    {"id": "adguard", "label": "AdGuard Home", "unit": "AdGuardHome.service", "ports": ["53", "8080"], "glyph": "brandShield", "ui": f"http://{LAN_IP}:8080"},
-    {"id": "k3s", "label": "k3s", "unit": "k3s.service", "ports": ["6443"], "glyph": "brandCubes"},
-    {"id": "grid", "label": "GRID", "kind": "k3s", "namespace": "homelab", "workloadKind": "deployment", "workload": "grid", "ports": ["8090", "7777"], "glyph": "globe", "ui": f"http://{LAN_IP}:8090"},
-    {"id": "eagleeye", "label": "EagleEye", "kind": "k3s", "namespace": "eagleeye", "workloadKind": "deployment", "workload": "eagleeye", "ports": ["8098"], "glyph": "activity", "ui": f"http://{LAN_IP}:8098"},
-    {"id": "work-website", "label": "Work Website", "kind": "k3s", "namespace": "cabrera-work-website", "workloadKind": "deployment", "workload": "cabrera-work-website", "ports": ["8081"], "glyph": "globe", "ui": f"http://{LAN_IP}:8081"},
-    {"id": "portfolio", "label": "CabreraPortfolio", "unit": "cabrera-portfolio.service", "ports": ["8099"], "glyph": "activity", "ui": "https://ann-and-chris.tail83be27.ts.net:9443/"},
-    {"id": "programs", "label": "CabreraPrograms", "unit": "cabrera-programs.service", "ports": ["8096"], "glyph": "brandTerminal", "ui": f"http://{LAN_IP}:8096"},
+    # These are local host facilities only; remote application health belongs
+    # to OPS_CHECK_CONFIG and the MacMiniOps monitor contract below.
+    {"id": "adguard", "label": "AdGuard Home (legacy Pi host row)", "unit": "AdGuardHome.service", "ports": ["53", "8080"], "glyph": "brandShield", "current": False},
+    {"id": "k3s", "label": "Wedding k3s", "unit": "k3s.service", "ports": ["6443"], "glyph": "brandCubes"},
+    {"id": "grid", "label": "GRID (legacy Pi host row)", "kind": "k3s", "namespace": "homelab", "workloadKind": "deployment", "workload": "grid", "ports": ["8090", "7777"], "glyph": "globe", "current": False},
+    {"id": "eagleeye", "label": "EagleEye (retired)", "kind": "k3s", "namespace": "eagleeye", "workloadKind": "deployment", "workload": "eagleeye", "ports": ["8098"], "glyph": "activity", "current": False},
+    {"id": "work-website", "label": "Work Website (retired Pi row)", "kind": "k3s", "namespace": "cabrera-work-website", "workloadKind": "deployment", "workload": "cabrera-work-website", "ports": ["8081"], "glyph": "globe", "current": False},
+    {"id": "portfolio", "label": "CabreraPortfolio (legacy Pi row)", "unit": "cabrera-portfolio.service", "ports": ["8099"], "glyph": "activity", "current": False},
+    {"id": "programs", "label": "CabreraPrograms (retired)", "unit": "cabrera-programs.service", "ports": ["8096"], "glyph": "brandTerminal", "current": False},
     {"id": "smbd", "label": "Samba (smbd)", "unit": "smbd.service", "ports": ["445"], "glyph": "brandFolderNet"},
     {"id": "nmbd", "label": "Samba (nmbd)", "unit": "nmbd.service", "ports": ["139"], "glyph": "brandFolderNet"},
     {"id": "ssh", "label": "SSH", "unit": "ssh.service", "ports": ["22"], "glyph": "brandTerminal"},
 ]
 
 WEB_APP_CONFIG = [
-    {"id": "cabrera-network", "label": "Cabrera Network", "url": f"http://{LAN_IP}/", "port": "80", "glyph": "activity", "kind": "dashboard"},
-    {"id": "adguard", "label": "AdGuard Home", "url": f"http://{LAN_IP}:8080/", "port": "8080", "glyph": "brandShield", "kind": "admin"},
-    {"id": "grid-wiki", "label": "GRID Wiki", "url": f"http://{LAN_IP}:8090/", "port": "8090", "glyph": "globe", "kind": "knowledge"},
-    {"id": "grid-api", "label": "GRID protected listener/API", "url": f"http://{LAN_IP}:7777/", "port": "7777", "glyph": "brandSocket", "kind": "api"},
-    {"id": "wedding", "label": "Wedding", "url": "https://ann-and-chris.tail83be27.ts.net/", "port": "443", "glyph": "globe", "kind": "site"},
-    {"id": "portfolio", "label": "CabreraPortfolio", "url": "https://ann-and-chris.tail83be27.ts.net:9443/", "port": "9443", "glyph": "activity", "kind": "dashboard"},
-    {"id": "eagleeye", "label": "EagleEye", "url": f"http://{LAN_IP}:8098/", "port": "8098", "glyph": "activity", "kind": "dashboard"},
-    {"id": "work-website", "label": "Work Website", "url": f"http://{LAN_IP}:8081/", "port": "8081", "glyph": "globe", "kind": "site"},
-    {"id": "programs", "label": "CabreraPrograms", "url": f"http://{LAN_IP}:8096/", "port": "8096", "glyph": "brandTerminal", "kind": "admin"},
+    # These are navigation links. Remote status remains unknown here; the
+    # actual health contract is OPS_CHECK_CONFIG and MacMiniOps/Kuma.
+    {"id": "macminiops", "label": "MacMiniOps", "url": f"{MACMINI_TAILNET_BASE}/", "port": "443", "glyph": "activity", "kind": "dashboard", "remote": True},
+    {"id": "adguard", "label": "AdGuard Home", "url": f"{MACMINI_TAILNET_BASE}:8080/", "port": "8080", "glyph": "brandShield", "kind": "admin", "remote": True},
+    {"id": "grid-wiki", "label": "GRID Wiki", "url": f"{MACMINI_TAILNET_BASE}:8090/", "port": "8090", "glyph": "globe", "kind": "knowledge", "remote": True},
+    {"id": "grid-api", "label": "GRID protected listener/API", "url": f"{MACMINI_TAILNET_BASE}:7777/", "port": "7777", "glyph": "brandSocket", "kind": "api", "remote": True},
+    {"id": "wedding", "label": "Wedding", "url": "https://ann-and-chris.tail83be27.ts.net/", "port": "443", "glyph": "globe", "kind": "site", "remote": True},
+    {"id": "portfolio", "label": "CabreraPortfolio", "url": f"{MACMINI_TAILNET_BASE}:9443/", "port": "9443", "glyph": "activity", "kind": "dashboard", "remote": True},
+    {"id": "work", "label": "Work Website", "url": f"{MACMINI_TAILNET_BASE}:8081/", "port": "8081", "glyph": "globe", "kind": "site", "remote": True},
+    {"id": "uptime-kuma", "label": "Uptime Kuma", "url": f"{MACMINI_TAILNET_BASE}:3001/", "port": "3001", "glyph": "activity", "kind": "monitoring", "remote": True},
 ]
 
 OPS_CADENCE_CONFIG = [
@@ -164,88 +168,25 @@ OPS_CADENCE_CONFIG = [
 OPS_CHECK_CONFIG = {
     "five-minute": [
         {"id": "gateway", "label": "Gateway reachability", "host": "Router", "kind": "ping", "target": ROUTER_IP, "failureStatus": "fail"},
-        {"id": "dns-resolver", "label": "DNS resolver", "host": "Pi4", "kind": "dns", "target": "example.com", "failureStatus": "fail"},
-        {"id": "pi4-power-throttle", "label": "Pi4 power/throttle", "host": "Pi4", "kind": "raspi-throttle", "failureStatus": "warn"},
-        {"id": "pi4-boot-state", "label": "Pi4 clean-shutdown state", "host": "Pi4", "kind": "boot-state", "path": str(BOOT_STATE_FILE), "failureStatus": "fail"},
+        {"id": "dns-resolver", "label": "DNS resolver", "host": "LAN", "kind": "dns", "target": "example.com", "failureStatus": "fail"},
         {"id": "wan-http", "label": "WAN HTTPS reachability", "host": "Internet", "kind": "http", "url": "https://one.one.one.one/cdn-cgi/trace", "timeout": 2.5, "failureStatus": "warn"},
         {"id": "wan-latency", "label": "WAN endpoint latency", "host": "Internet", "kind": "multi-http", "urls": ["https://one.one.one.one/cdn-cgi/trace", "https://www.google.com/generate_204", "https://cloudflare.com/cdn-cgi/trace"], "timeout": 4, "maxAvgMs": 1000, "failureStatus": "warn"},
-        {"id": "dns-latency", "label": "DNS latency", "host": "Pi4", "kind": "multi-dns", "targets": ["one.one.one.one", "google.com", "github.com"], "maxAvgMs": 500, "failureStatus": "warn"},
-        {"id": "pi4-noc", "label": "Cabrera Network", "host": "Pi4", "kind": "http", "url": f"http://{LAN_IP}/api/session", "expectJson": True, "failureStatus": "warn"},
-        {"id": "grid-web", "label": "GRID web/API", "host": "Pi4 k3s", "kind": "http", "url": f"http://{LAN_IP}:8090/healthz", "jsonField": "ok", "jsonEquals": True, "failureStatus": "fail"},
-        {"id": "grid-mcp", "label": "GRID MCP", "host": "Pi4 k3s", "kind": "http", "url": f"http://{LAN_IP}:7777/healthz", "jsonField": "ok", "jsonEquals": True, "failureStatus": "fail"},
-        {"id": "wedding-public", "label": "Wedding public TLS/health", "host": "Pi4 Funnel", "kind": "http", "url": WEDDING_PUBLIC_HEALTH_URL, "attempts": 2, "timeout": 4, "failureStatus": "fail"},
-        {"id": "eagleeye", "label": "EagleEye", "host": "Pi4 k3s", "kind": "http", "url": f"http://{LAN_IP}:8098/healthz", "jsonField": "status", "jsonEquals": "ok", "failureStatus": "fail"},
-        {"id": "work-website", "label": "Work Website", "host": "Pi4 k3s", "kind": "http", "url": f"http://{LAN_IP}:8081/healthz", "failureStatus": "fail"},
-        {"id": "programs", "label": "CabreraPrograms", "host": "Pi4", "kind": "http", "url": f"http://{LAN_IP}:8096/api/session", "expectJson": True, "failureStatus": "fail"},
-        {
-            "id": "portfolio-api",
-            "label": "Portfolio API",
-            "host": "Pi4",
-            "kind": "http",
-            "url": PORTFOLIO_LOOPBACK_HEALTH_URL,
-            "jsonField": "ok",
-            "jsonEquals": True,
-            "attempts": 2,
-            "retryDelay": 0.1,
-            "timeout": 2,
-            "failureStatus": "fail",
-        },
-        {
-            "id": "portfolio-tailnet",
-            "label": "Portfolio Tailscale access",
-            "host": "Pi4 tailnet",
-            "kind": "http",
-            "url": PORTFOLIO_TAILNET_HEALTH_URL,
-            "jsonField": "ok",
-            "jsonEquals": True,
-            "attempts": 2,
-            "timeout": 2,
-            "retryDelay": 0.2,
-            "failureStatus": "warn",
-        },
+        {"id": "dns-latency", "label": "DNS latency", "host": "LAN", "kind": "multi-dns", "targets": ["one.one.one.one", "google.com", "github.com"], "maxAvgMs": 500, "failureStatus": "warn"},
+        {"id": "macminiops", "label": "MacMiniOps", "host": "Mac mini", "kind": "http", "url": MACMINIOPS_HEALTH_URL, "failureStatus": "fail"},
+        {"id": "grid-web", "label": "GRID web/API", "host": "Mac mini", "kind": "http", "url": GRID_WEB_HEALTH_URL, "failureStatus": "fail"},
+        {"id": "grid-mcp", "label": "GRID MCP auth boundary", "host": "Mac mini", "kind": "http", "url": GRID_MCP_HEALTH_URL, "okStatuses": [401], "failureStatus": "fail"},
+        {"id": "wedding-public", "label": "Wedding public TLS/health", "host": "Pi4 Wedding Funnel", "kind": "http", "url": WEDDING_PUBLIC_HEALTH_URL, "attempts": 2, "timeout": 4, "failureStatus": "fail"},
+        {"id": "work", "label": "Work Website", "host": "Mac mini", "kind": "http", "url": WORK_HEALTH_URL, "failureStatus": "fail"},
+        {"id": "portfolio", "label": "CabreraPortfolio", "host": "Mac mini", "kind": "http", "url": PORTFOLIO_HEALTH_URL, "attempts": 2, "timeout": 2, "retryDelay": 0.2, "failureStatus": "fail"},
     ],
     "hourly": [
         {"id": "wan-speed", "label": "WAN speed sample", "host": "Internet", "kind": "speed-lite", "url": SPEED_TEST_URL, "timeout": 4, "minMbps": SPEED_WARN_MBPS, "failureStatus": "warn"},
         {"id": "k3s-release", "label": "k3s latest release", "host": "GitHub", "kind": "github-release", "repo": "k3s-io/k3s", "failureStatus": "warn"},
-        {"id": "hourly-backups", "label": "Backup verification", "host": "Pi4", "kind": "backup-recent", "path": "/mnt/ssd/backups", "maxAgeHours": 72, "verifyContents": True, "failureStatus": "warn"},
-        {"id": "backup-artifacts", "label": "Backup artifact integrity", "host": "Pi4", "kind": "backup-artifacts", "path": "/mnt/ssd/backups", "maxArchives": 8, "maxChecksums": 8, "failureStatus": "warn"},
-        {"id": "pi4-k3s-node", "label": "Pi4 k3s node", "host": "Pi4 k3s", "kind": "k3s-local", "scope": "nodes", "failureStatus": "fail"},
-        {"id": "pi4-k3s-apps", "label": "Pi4 k3s apps", "host": "Pi4 k3s", "kind": "k3s-local", "scope": "workloads", "workloads": ["grid", "wedding-website", "eagleeye", "cabrera-work-website"], "failureStatus": "fail"},
-        {"id": "pi4-k3s-resources", "label": "Pi4 k3s resource guardrails", "host": "Pi4 k3s", "kind": "k3s-resources", "namespace": "homelab", "workloads": ["grid"], "failureStatus": "warn"},
-        {"id": "pi4-wedding-resources", "label": "Wedding resource guardrails", "host": "Pi4 k3s", "kind": "k3s-resources", "namespace": "wedding", "workloads": ["wedding-website"], "failureStatus": "warn"},
-        {"id": "pi4-eagleeye-resources", "label": "EagleEye resource guardrails", "host": "Pi4 k3s", "kind": "k3s-resources", "namespace": "eagleeye", "workloads": ["eagleeye"], "failureStatus": "warn"},
-        {"id": "pi4-work-website-resources", "label": "Work Website resource guardrails", "host": "Pi4 k3s", "kind": "k3s-resources", "namespace": "cabrera-work-website", "workloads": ["cabrera-work-website"], "failureStatus": "warn"},
-        {"id": "pi4-port-drift", "label": "Pi4 open-port drift", "host": "Pi4", "kind": "port-drift", "allow": ["tcp/22", "tcp/53", "tcp/80", "tcp/139", "tcp/445", "tcp/6443", "tcp/8080", "tcp/8081", "tcp/8096", "tcp/8098", "tcp/8099", "tcp/10250", "udp/53", "udp/137", "udp/138", "udp/8472", "udp/41641", "udp/5353"], "ignoreUdpAbove": 20000, "failureStatus": "warn"},
-        {"id": "grid-index", "label": "GRID index", "host": "Pi4 k3s", "kind": "http", "url": f"http://{LAN_IP}:8090/api/stats", "jsonField": "schema_version", "jsonEquals": 3, "failureStatus": "warn"},
     ],
     "morning": [
         {"id": "brief", "label": "Morning service brief", "host": "Ops Center", "kind": "operations-brief", "failureStatus": "warn"},
-        {"id": "overnight-storage-events", "label": "Overnight storage events", "host": "Pi4", "kind": "journal-pattern", "since": "12 hours ago", "patterns": ["I/O error", "EXT4-fs error", "Buffer I/O", "blk_update_request", "mmc.*error", "sda.*error", "filesystem.*error", "read-only file system"], "failureStatus": "warn"},
     ],
-    "nightly": [
-        {"id": "logrotate-timer", "label": "Log rotation timer", "host": "Pi4", "kind": "systemd-timer", "unit": "logrotate.timer", "maxLastHours": 36, "failureStatus": "warn"},
-        {"id": "log2ram-flush", "label": "log2ram daily flush", "host": "Pi4", "kind": "systemd-timer", "unit": "log2ram-daily.timer", "maxLastHours": 36, "failureStatus": "warn"},
-        {"id": "tmpfiles-clean", "label": "Temp/log cleanup timer", "host": "Pi4", "kind": "systemd-timer", "unit": "systemd-tmpfiles-clean.timer", "maxLastHours": 48, "failureStatus": "warn"},
-        {"id": "dpkg-backup", "label": "Package DB backup timer", "host": "Pi4", "kind": "systemd-timer", "unit": "dpkg-db-backup.timer", "maxLastHours": 36, "failureStatus": "warn"},
-        {"id": "pi4-backup-timer", "label": "Pi4 backup timer", "host": "Pi4", "kind": "systemd-timer", "unit": "pi4-backup.timer", "failureStatus": "warn"},
-        {"id": "restore-drill-timer", "label": "Restore drill timer", "host": "Pi4", "kind": "systemd-timer", "unit": "pi4-restore-drill.timer", "failureStatus": "warn"},
-        {"id": "restore-drill-state", "label": "Restore drill freshness", "host": "Pi4", "kind": "file-freshness", "path": "/var/lib/pi4-backup/last-restore-drill.json", "maxAgeHours": 192, "jsonField": "status", "jsonEquals": "ok", "failureStatus": "warn"},
-        {"id": "backup-service-result", "label": "Pi4 backup result", "host": "Pi4", "kind": "systemd-service-result", "unit": "pi4-backup.service", "allowNever": True, "failureStatus": "fail"},
-        {"id": "restore-drill-service-result", "label": "Restore drill result", "host": "Pi4", "kind": "systemd-service-result", "unit": "pi4-restore-drill.service", "allowNever": True, "failureStatus": "fail"},
-        {"id": "filesystem-trim", "label": "Filesystem trim timer", "host": "Pi4", "kind": "systemd-timer", "unit": "fstrim.timer", "maxLastHours": 192, "failureStatus": "warn"},
-        {"id": "kernel-io-health", "label": "Kernel storage/power errors", "host": "Pi4", "kind": "journal-pattern", "since": "24 hours ago", "patterns": ["I/O error", "EXT4-fs error", "Buffer I/O", "blk_update_request", "mmc.*error", "sda.*error", "filesystem.*error", "read-only file system", "Undervoltage detected"], "failureStatus": "warn"},
-        {"id": "root-disk", "label": "Root disk headroom", "host": "Pi4", "kind": "disk", "path": "/", "maxPct": 85, "maxInodePct": 85, "failureStatus": "warn"},
-        {"id": "data-hdd-disk", "label": "Data HDD headroom", "host": "Pi4", "kind": "disk", "path": "/mnt/ssd", "maxPct": 85, "maxInodePct": 85, "failureStatus": "warn"},
-        {"id": "data-hdd-mount", "label": "Data HDD mount integrity", "host": "Pi4", "kind": "mount", "path": "/mnt/ssd", "expectedUuid": "b0a1a356-3c0e-4f68-9c80-3379f662b4bc", "expectedFstype": "ext4", "requireReadWrite": True, "failureStatus": "fail"},
-        {"id": "brain-mount", "label": "GRID brain mount", "host": "Pi4", "kind": "mount", "path": "/mnt/nas/brain", "expectedUuid": "b0a1a356-3c0e-4f68-9c80-3379f662b4bc", "expectedFstype": "ext4", "requireReadWrite": True, "failureStatus": "fail"},
-        {"id": "data-hdd-smart", "label": "Data HDD SMART health", "host": "Pi4", "kind": "smart", "device": "/dev/sda", "maxTempC": 50, "unavailableStatus": "warn", "failureStatus": "fail"},
-        {"id": "data-hdd-smart-short-timer", "label": "Data HDD short SMART test timer", "host": "Pi4", "kind": "systemd-timer", "unit": "pi4-smart-short.timer", "failureStatus": "warn"},
-        {"id": "data-hdd-smart-long-timer", "label": "Data HDD long SMART test timer", "host": "Pi4", "kind": "systemd-timer", "unit": "pi4-smart-long.timer", "failureStatus": "warn"},
-        {"id": "brain-freshness", "label": "GRID brain freshness", "host": "Pi4", "kind": "path-freshness", "path": "/mnt/nas/brain", "maxAgeHours": 168, "recursive": True, "failureStatus": "warn"},
-        {"id": "brain-vault-parity", "label": "GRID vault path parity", "host": "Pi4", "kind": "path-parity", "source": "/mnt/nas/brain", "target": "/mnt/ssd/nas/brain", "pattern": "*.md", "maxHashFiles": 50, "failureStatus": "warn"},
-        {"id": "grid-vault-sync", "label": "GRID vault/index sync", "host": "Pi4 k3s", "kind": "grid-sync", "url": f"http://{LAN_IP}:8090/api/stats", "minNotes": 1, "maxScanAgeMinutes": 30, "failureStatus": "warn"},
-        {"id": "backup-retention", "label": "Backup retention pressure", "host": "Pi4", "kind": "directory-retention", "path": "/mnt/ssd/backups", "maxEntries": 50, "maxOldestDays": 180, "failureStatus": "warn"},
-    ],
+    "nightly": [],
 }
 
 ALLOWED_UNITS = {row["unit"] for row in UNIT_CONFIG if "unit" in row}
@@ -255,6 +196,33 @@ SAFE_NAME_RE = re.compile(r"^[A-Za-z0-9_.@:/-]{1,160}$")
 SECRET_RE = re.compile(r"(?i)(password|passwd|token|secret|apikey|api_key|authorization)([=: ]+)(\S+)")
 MAC_RE = re.compile(r"^(?:[0-9a-f]{2}[:-]){5}[0-9a-f]{2}$", re.I)
 AUTH_EXEMPT_API_PATHS = {"/api/session", "/api/login", "/api/logout"}
+
+
+def parse_trusted_proxy_networks(value: str) -> tuple[ipaddress.IPv4Network | ipaddress.IPv6Network, ...]:
+    networks = []
+    for token in re.split(r"[\s,]+", value.strip()):
+        if not token:
+            continue
+        try:
+            if "/" not in token:
+                token = f"{token}/128" if ":" in token else f"{token}/32"
+            networks.append(ipaddress.ip_network(token, strict=False))
+        except ValueError:
+            # A malformed trust list must disable proxy-header trust rather
+            # than leaving a partially trusted deployment ambiguous.
+            return ()
+    return tuple(networks)
+
+
+TRUSTED_PROXY_NETWORKS = parse_trusted_proxy_networks(os.environ.get("PI4_NOC_TRUSTED_PROXY_CIDRS", ""))
+
+
+try:
+    TRUSTED_PROXY_HOPS = max(1, min(8, int(os.environ.get("PI4_NOC_TRUSTED_PROXY_HOPS", "1"))))
+except (TypeError, ValueError):
+    TRUSTED_PROXY_HOPS = 1
+
+
 LOGIN_FAILURES: dict[str, deque[float]] = {}
 LOGIN_LOCK = threading.RLock()
 THROTTLE_CURRENT_FLAGS = {
@@ -333,8 +301,89 @@ def verify_login_password(password: str) -> bool:
         return False
 
 
+def request_peer_ip() -> ipaddress.IPv4Address | ipaddress.IPv6Address | None:
+    raw_peer = (getattr(request, "remote_addr", None) or "").strip()
+    if not raw_peer:
+        return None
+    try:
+        return ipaddress.ip_address(raw_peer)
+    except ValueError:
+        return None
+
+
+def trusted_proxy_peer(peer: ipaddress.IPv4Address | ipaddress.IPv6Address | None) -> bool:
+    return bool(peer and any(peer in network for network in TRUSTED_PROXY_NETWORKS))
+
+
+def forwarded_chain() -> list[ipaddress.IPv4Address | ipaddress.IPv6Address] | None:
+    raw_header = getattr(request, "headers", {}).get("X-Forwarded-For", "")
+    if not raw_header.strip():
+        return None
+    chain = []
+    for value in raw_header.split(","):
+        try:
+            chain.append(ipaddress.ip_address(value.strip()))
+        except ValueError:
+            return None
+    return chain or None
+
+
+def validated_forwarded_client_ip() -> ipaddress.IPv4Address | ipaddress.IPv6Address | None:
+    peer = request_peer_ip()
+    if not trusted_proxy_peer(peer):
+        return None
+    chain = forwarded_chain()
+    if not chain or len(chain) < TRUSTED_PROXY_HOPS:
+        return None
+
+    # For more than one configured hop, every address between the selected
+    # client and the socket peer must itself be in the trusted proxy list.
+    # This mirrors the right-to-left proxy-chain validation used by standard
+    # proxy middleware while keeping the no-proxy default fail-closed.
+    proxy_chain = chain[-(TRUSTED_PROXY_HOPS - 1):] if TRUSTED_PROXY_HOPS > 1 else []
+    if any(not trusted_proxy_peer(proxy) for proxy in proxy_chain):
+        return None
+    return chain[-TRUSTED_PROXY_HOPS]
+
+
 def login_client_key() -> str:
-    return request.headers.get("X-Forwarded-For", request.remote_addr or "local").split(",")[0].strip() or "local"
+    peer = request_peer_ip()
+    forwarded = validated_forwarded_client_ip()
+    if forwarded is not None:
+        return str(forwarded)
+    if peer is not None:
+        return str(peer)
+    return (getattr(request, "remote_addr", None) or "local").strip() or "local"
+
+
+def request_uses_https() -> bool:
+    if bool(getattr(request, "is_secure", False)):
+        return True
+    if not trusted_proxy_peer(request_peer_ip()):
+        return False
+    forwarded_proto = getattr(request, "headers", {}).get("X-Forwarded-Proto", "")
+    return forwarded_proto.strip().lower() == "https"
+
+
+def tls_context_from_environment() -> tuple[str, str] | None:
+    if not TLS_CERT_FILE and not TLS_KEY_FILE:
+        return None
+    if not TLS_CERT_FILE or not TLS_KEY_FILE:
+        raise RuntimeError("PI4_NOC_TLS_CERT_FILE and PI4_NOC_TLS_KEY_FILE must be configured together")
+    cert = Path(TLS_CERT_FILE)
+    key = Path(TLS_KEY_FILE)
+    if not cert.is_file() or not key.is_file():
+        raise RuntimeError(f"configured TLS certificate/key is missing: {cert} / {key}")
+    return str(cert), str(key)
+
+
+def is_loopback_bind(host: str) -> bool:
+    if host.strip().lower() == "localhost":
+        return True
+    try:
+        return ipaddress.ip_address(host).is_loopback
+    except ValueError:
+        return False
 
 
 def authenticated() -> bool:
@@ -1134,7 +1183,12 @@ class DashboardCache:
             "WEB_APPS": self.web_apps_snapshot({}),
             "OPS_CENTER": self.empty_operations_snapshot(),
             "HOST": {},
-            "META": {"updatedAt": datetime.now().isoformat(), "source": "pi4-noc-sidecar"},
+            "META": {
+                "updatedAt": datetime.now().isoformat(),
+                "source": "pi4-noc-sidecar",
+                "state": "loading",
+                "message": "Waiting for live collectors",
+            },
         }
 
     def start(self) -> None:
@@ -1152,7 +1206,7 @@ class DashboardCache:
             thread.start()
 
     def _initial_refresh(self) -> None:
-        self._run_refreshes(
+        succeeded = self._run_refreshes(
             "initial",
             self.update_services,
             self.update_adguard,
@@ -1161,6 +1215,15 @@ class DashboardCache:
             self.update_router_collector,
             self.update_topology,
         )
+        with self.lock:
+            self.snapshot_data["META"] = {
+                **self.snapshot_data.get("META", {}),
+                "updatedAt": datetime.now().isoformat(),
+                "source": "pi4-noc-sidecar",
+                "state": "ready" if succeeded else "degraded",
+                "message": "Live collectors connected" if succeeded else "Some live collectors are unavailable",
+            }
+            self._touch_locked()
 
     def _run_refreshes(self, label: str, *callbacks) -> bool:
         succeeded = True
@@ -1242,7 +1305,11 @@ class DashboardCache:
             self.snapshot_data["HISTORY"] = {k: list(v) for k, v in self.histories.items()}
             self.snapshot_data["STORAGE"] = self.storage_snapshot(root_usage, ssd_usage)
             self.snapshot_data["KPIS"] = self.kpis()
-            self.snapshot_data["META"] = {"updatedAt": datetime.now().isoformat(), "source": "pi4-noc-sidecar"}
+            self.snapshot_data["META"] = {
+                **self.snapshot_data.get("META", {}),
+                "updatedAt": datetime.now().isoformat(),
+                "source": "pi4-noc-sidecar",
+            }
             self._touch_locked()
 
     def temperature_c(self) -> float:
@@ -1348,12 +1415,14 @@ class DashboardCache:
 
     def update_services(self) -> None:
         listening = listening_ports()
-        all_ports = {str(p) for cfg in UNIT_CONFIG for p in cfg["ports"]} | {str(cfg["port"]) for cfg in WEB_APP_CONFIG}
+        current_units = [cfg for cfg in UNIT_CONFIG if cfg.get("current", True)]
+        local_web_ports = {str(cfg["port"]) for cfg in WEB_APP_CONFIG if not cfg.get("remote")}
+        all_ports = {str(p) for cfg in current_units for p in cfg["ports"]} | local_web_ports
         reachable = probe_ports(all_ports, listening)
-        systemd_units = [cfg["unit"] for cfg in UNIT_CONFIG if cfg.get("kind") != "k3s"]
+        systemd_units = [cfg["unit"] for cfg in current_units if cfg.get("kind") != "k3s"]
         systemd_rows = service_show_many(systemd_units)
         services = []
-        for cfg in UNIT_CONFIG:
+        for cfg in current_units:
             port_ok = all(reachable.get(str(p)) for p in cfg["ports"]) if cfg["ports"] else None
             if cfg.get("kind") == "k3s":
                 svc = self.k3s_service_row(cfg, port_ok)
@@ -1426,6 +1495,9 @@ class DashboardCache:
     def web_apps_snapshot(self, reachable: dict[str, bool]) -> list[dict]:
         apps = []
         for cfg in WEB_APP_CONFIG:
+            if cfg.get("remote"):
+                apps.append({**cfg, "status": "unknown", "statusLabel": "not probed"})
+                continue
             ok = bool(reachable.get(str(cfg["port"])))
             apps.append(
                 {
@@ -1637,6 +1709,19 @@ class DashboardCache:
                     )
                 if ok:
                     return operation_check_result(check, "ok", last_message, started, httpStatus=code, attempts=attempt)
+            except urlerror.HTTPError as exc:
+                last_code = int(exc.code)
+                ok_codes = check.get("okStatuses") or list(range(200, 400))
+                if last_code in ok_codes:
+                    return operation_check_result(
+                        check,
+                        "ok",
+                        f"HTTP {last_code}",
+                        started,
+                        httpStatus=last_code,
+                        attempts=attempt,
+                    )
+                last_message = f"HTTP {last_code}"
             except Exception as exc:
                 last_message = str(exc) or type(exc).__name__
 
@@ -3620,7 +3705,7 @@ app.config.update(
     SECRET_KEY=load_session_secret(),
     SESSION_COOKIE_HTTPONLY=True,
     SESSION_COOKIE_SAMESITE="Lax",
-    SESSION_COOKIE_SECURE=os.environ.get("PI4_NOC_SESSION_SECURE", "0").lower() in {"1", "true", "yes"},
+    SESSION_COOKIE_SECURE=os.environ.get("PI4_NOC_SESSION_SECURE", "1").lower() in {"1", "true", "yes"},
 )
 
 
@@ -3661,6 +3746,8 @@ def api_session():
 
 @app.post("/api/login")
 def api_login():
+    if not request_uses_https():
+        return jsonify({"authenticated": False, "error": "HTTPS is required for password login"}), 400
     payload = request.get_json(force=True, silent=True) or {}
     password = str(payload.get("password") or "")
     key = login_client_key()
@@ -3804,16 +3891,22 @@ def static_or_index(path: str):
 
 def parse_args():
     parser = argparse.ArgumentParser(description="Cabrera Network dashboard sidecar")
-    parser.add_argument("--host", default=os.environ.get("PI4_NOC_HOST", "0.0.0.0"))
-    parser.add_argument("--port", default=int(os.environ.get("PI4_NOC_PORT", "80")), type=int)
+    parser.add_argument("--host", default=os.environ.get("PI4_NOC_HOST", "127.0.0.1"))
+    parser.add_argument("--port", default=int(os.environ.get("PI4_NOC_PORT", "8080")), type=int)
     parser.add_argument("--debug", action="store_true")
     return parser.parse_args()
 
 
 def main() -> None:
     args = parse_args()
+    ssl_context = tls_context_from_environment()
+    if not is_loopback_bind(args.host) and ssl_context is None:
+        raise RuntimeError(
+            "refusing to expose the dashboard without TLS; bind to loopback behind a trusted HTTPS proxy "
+            "or configure PI4_NOC_TLS_CERT_FILE and PI4_NOC_TLS_KEY_FILE"
+        )
     cache.start()
-    app.run(host=args.host, port=args.port, debug=args.debug, threaded=True, use_reloader=False)
+    app.run(host=args.host, port=args.port, debug=args.debug, threaded=True, use_reloader=False, ssl_context=ssl_context)
 
 
 if __name__ == "__main__":

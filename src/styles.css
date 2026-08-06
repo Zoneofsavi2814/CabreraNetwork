@@ -435,6 +435,58 @@
     justify-content: center;
   }
 
+  .feed-state-shell {
+    min-height: 100dvh;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    padding: 24px;
+    background:
+      radial-gradient(42% 52% at 20% 10%, rgba(34,211,238,0.12), transparent 62%),
+      radial-gradient(46% 58% at 82% 90%, rgba(129,140,248,0.12), transparent 64%),
+      var(--bg);
+  }
+  .feed-state-card {
+    width: min(560px, 100%);
+    padding: 24px;
+    display: grid;
+    gap: 18px;
+  }
+  .feed-state-heading {
+    display: flex;
+    align-items: flex-start;
+    gap: 12px;
+  }
+  .feed-state-heading h1 {
+    margin: 0;
+    font-size: 18px;
+  }
+  .feed-state-heading p {
+    margin: 6px 0 0;
+    color: var(--slate);
+    font-size: 12px;
+    line-height: 1.55;
+  }
+  .feed-skeleton {
+    display: grid;
+    gap: 9px;
+  }
+  .feed-skeleton span {
+    display: block;
+    height: 10px;
+    border-radius: 999px;
+    background: linear-gradient(90deg, rgba(148,163,184,0.08), rgba(34,211,238,0.18), rgba(148,163,184,0.08));
+    background-size: 220% 100%;
+    animation: feed-skeleton 1.8s ease-in-out infinite;
+  }
+  .feed-skeleton span:nth-child(2) { width: 86%; }
+  .feed-skeleton span:nth-child(3) { width: 68%; }
+  .feed-skeleton span:nth-child(4) { width: 48%; }
+  @keyframes feed-skeleton {
+    0%, 100% { background-position: 100% 0; opacity: 0.58; }
+    50% { background-position: 0 0; opacity: 1; }
+  }
+
   /* Refresh ripple — panels flash a cyan glow */
   @keyframes ripple-flash {
     0%   { box-shadow: inset 0 0 0 1px rgba(34,211,238,0.0); border-color: var(--hairline); }

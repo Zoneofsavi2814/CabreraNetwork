@@ -60,7 +60,7 @@ from server import app as appmod
 class TopologyCollectorTests(unittest.TestCase):
     def make_cache(self):
         cache = appmod.DashboardCache()
-        cache.snapshot_data["HOST"] = {"name": "pi4", "ip": "192.168.0.101"}
+        cache.snapshot_data["HOST"] = {"name": "macmini", "ip": "192.168.0.6"}
         cache.snapshot_data["HISTORY"] = {"netIn": [0], "netOut": [0]}
         return cache
 
@@ -139,7 +139,7 @@ class TopologyCollectorTests(unittest.TestCase):
         cache = self.make_cache()
         ip_neighbors = [
             {
-                "ip": f"192.168.0.{100 + index}",
+                "ip": f"192.168.0.{120 + index}",
                 "mac": f"aa:bb:cc:dd:ee:{index:02x}",
                 "interface": "LAN",
                 "online": True,
@@ -166,13 +166,13 @@ class TopologyCollectorTests(unittest.TestCase):
             cache.collect_topology()
 
         self.assertEqual(resolver.call_count, 2)
-        self.assertEqual([call.args[0] for call in resolver.call_args_list], ["192.168.0.100", "192.168.0.101"])
+        self.assertEqual([call.args[0] for call in resolver.call_args_list], ["192.168.0.120", "192.168.0.121"])
 
     def test_cached_misses_allow_fair_resolution_across_cycles(self):
         cache = self.make_cache()
         neighbors = [
             {
-                "ip": f"192.168.0.{100 + index}",
+                "ip": f"192.168.0.{120 + index}",
                 "mac": f"aa:bb:cc:dd:ee:{index:02x}",
                 "interface": "LAN",
                 "online": True,

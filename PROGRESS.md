@@ -1,5 +1,7 @@
 # Cabrera Network Goal Progress
 
+> This file is a historical record of the former Pi4 NOC implementation. Current estate health ownership is MacMiniOps on `macmini`; dated Pi4/RP5/application-host references below are preserved as migration evidence, not current topology claims.
+
 ## 2026-07-14 Pi4 Balanced Performance And Low-Idle Optimization
 
 Current milestone: implementation and maintenance-window rollout complete; the user waived the 24-hour soak.

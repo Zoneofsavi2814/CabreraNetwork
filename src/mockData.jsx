@@ -1,4 +1,5 @@
 /* Mock data — 60 points (1-hour window) for time-series, plus all panels' content. */
+/* Demo fixture only — not an authoritative health or monitor contract. */
 
 // Deterministic-ish RNG so visuals stay stable across reloads
 function rng(seed) {
@@ -60,6 +61,8 @@ const KPIS = [
 const SERVICES = [
   { id: "adguard", label: "AdGuard Home",  unit: "AdGuardHome.service",         port: "53 · 8080", status: "ok", glyph: "brandShield",     ui: "http://192.168.0.101:8080" },
   { id: "k3s",     label: "k3s",           unit: "k3s.service",                 port: "6443",      status: "ok", glyph: "brandCubes" },
+  { id: "portfolio", label: "CabreraPortfolio", unit: "cabrera-portfolio.service", port: "8099", status: "ok", glyph: "activity", ui: "https://ann-and-chris.tail83be27.ts.net:9443/" },
+  { id: "programs", label: "CabreraPrograms", unit: "cabrera-programs.service", port: "8096", status: "ok", glyph: "brandTerminal", ui: "http://192.168.0.101:8096" },
   { id: "grid",    label: "GRID",          kind: "k3s", namespace: "homelab", workloadKind: "deployment", workload: "grid",        unit: "k3s · homelab/grid",        port: "8090 · 7777", status: "ok", glyph: "globe",          ui: "http://192.168.0.101:8090" },
   { id: "smbd",    label: "Samba (smbd)",  unit: "smbd.service",                port: "445",       status: "ok", glyph: "brandFolderNet" },
   { id: "nmbd",    label: "Samba (nmbd)",  unit: "nmbd.service",                port: "139",       status: "ok", glyph: "brandFolderNet" },
@@ -67,7 +70,7 @@ const SERVICES = [
 ];
 
 const WEB_APPS = [
-  { id: "cabrera-network", label: "Cabrera Network", url: "http://192.168.0.101/", port: "80", glyph: "activity", kind: "dashboard", status: "ok", statusLabel: "online" },
+  { id: "cabrera-network", label: "Cabrera Network", url: "https://dashboard.example.tailnet/", port: "443", glyph: "activity", kind: "dashboard", status: "ok", statusLabel: "online" },
   { id: "adguard", label: "AdGuard Home", url: "http://192.168.0.101:8080/", port: "8080", glyph: "brandShield", kind: "admin", status: "ok", statusLabel: "online" },
   { id: "grid-wiki", label: "GRID Wiki", url: "http://192.168.0.101:8090/", port: "8090", glyph: "globe", kind: "knowledge", status: "ok", statusLabel: "online" },
   { id: "grid-api", label: "GRID protected listener/API", url: "http://192.168.0.101:7777/", port: "7777", glyph: "brandSocket", kind: "api", status: "ok", statusLabel: "online" },
@@ -259,4 +262,4 @@ const OPS_CENTER = {
   ],
 };
 
-export const DEFAULT_DASHBOARD = { HISTORY, KPIS, SERVICES, WEB_APPS, ADGUARD, K3S, STORAGE, LOGS, HOST, TOPOLOGY, OPS_CENTER };
+export const DEMO_DASHBOARD = { HISTORY, KPIS, SERVICES, WEB_APPS, ADGUARD, K3S, STORAGE, LOGS, HOST, TOPOLOGY, OPS_CENTER };

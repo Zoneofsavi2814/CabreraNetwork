@@ -244,7 +244,11 @@ class CollectorPerformanceTests(unittest.TestCase):
         self.assertEqual(with_missing["beta.service"]["SubState"], "dead")
 
         cache = appmod.DashboardCache()
-        systemd_units = [cfg["unit"] for cfg in appmod.UNIT_CONFIG if cfg.get("kind") != "k3s"]
+        systemd_units = [
+            cfg["unit"]
+            for cfg in appmod.UNIT_CONFIG
+            if cfg.get("current", True) and cfg.get("kind") != "k3s"
+        ]
         rows = {unit: {"ActiveState": "active", "SubState": "running", "NRestarts": "0", "MainPID": "1"} for unit in systemd_units}
         all_ports = {str(port) for cfg in appmod.UNIT_CONFIG for port in cfg["ports"]} | {str(cfg["port"]) for cfg in appmod.WEB_APP_CONFIG}
         with (

@@ -2,6 +2,8 @@
 
 Raspberry Pi 4 control-room dashboard for the home network. It combines a Vite/React UI with a Flask sidecar that reports host metrics, services, AdGuard, k3s, topology, logs, allowlisted actions, and web app links.
 
+> **Current estate status (2026-07-31):** MacMiniOps on `macmini` (`192.168.0.6`) owns current application health for GRID, Work, Portfolio, and Uptime Kuma. This repository's Pi4 deployment and service-ownership notes below are retained as historical implementation records; Pi4 is now the Wedding-only host, and EagleEye, HomeTwin, Coinbot, and the former standalone Portfolio/Work/Programs rows are not current estate monitors.
+
 ## Local Development
 
 ```bash
@@ -10,18 +12,22 @@ npm run build
 python3 -m py_compile server/app.py server/k3s_client.py server/sudo_ops.py server/tplink_collector.py
 ```
 
-## Pi4 Deployment
+## Pi4 Deployment (historical reference)
 
-The deployed Pi4 copy lives at `/opt/pi4-noc` and runs as `pi4-noc.service` on `http://192.168.0.101/`.
+The former Pi4 copy lives at `/opt/pi4-noc` and ran as `pi4-noc.service` behind the configured HTTPS boundary; the sidecar itself bound to `127.0.0.1:8080` by default.
 
-Observed/controlled services include AdGuard Home, k3s, Samba, SSH, GRID, Wedding, EagleEye, CabreraPortfolio, CabreraWorkWebsite, and CabreraPrograms.
+The former Pi4 service surface included AdGuard Home, k3s, Samba, SSH, GRID, Wedding, EagleEye, CabreraPortfolio, CabreraWorkWebsite, and CabreraPrograms. Those Pi4-local application rows are historical; current remote application health is owned by MacMiniOps.
 
-Portfolio runs on Pi4 loopback at `127.0.0.1:8099`; Tailscale Serve publishes it privately at `https://ann-and-chris.tail83be27.ts.net:9443/`. Wedding's public Funnel and TLS health are checked independently at `https://ann-and-chris.tail83be27.ts.net/healthz`. Override these probes with `PI4_NOC_PORTFOLIO_HEALTH_URL`, `PI4_NOC_PORTFOLIO_LOOPBACK_HEALTH_URL`, or `PI4_NOC_WEDDING_HEALTH_URL` only when the canonical routes change.
+The current health contract is MacMiniOps `/healthz`, GRID web `https://macmini.tail83be27.ts.net:8090/healthz`, GRID MCP `https://macmini.tail83be27.ts.net:7777/healthz` (HTTP `401` is the expected auth-boundary result), Work `https://macmini.tail83be27.ts.net:8081/healthz`, and Portfolio `https://macmini.tail83be27.ts.net:9443/api/health`. Wedding's public Funnel and TLS health remain separate at `https://ann-and-chris.tail83be27.ts.net/healthz`; override only that historical Pi4 probe with `PI4_NOC_WEDDING_HEALTH_URL` when its canonical route changes.
 
 ```bash
 npm run build
 scripts/install-pi.sh
 ```
+
+The dashboard now binds to `127.0.0.1:8080` by default. PAM login is accepted only over HTTPS: use an existing HTTPS reverse proxy or Tailscale Serve in front of that loopback listener, configure `PI4_NOC_PUBLIC_URL`, and set `PI4_NOC_TRUSTED_PROXY_CIDRS` (plus the proxy hop count when needed) in `/etc/pi4-noc/notify.env`. The proxy must overwrite `X-Forwarded-Proto` and `X-Forwarded-For`; untrusted or malformed forwarding headers are ignored. Never publish the loopback port as plaintext LAN HTTP.
+
+When no trusted proxy is available, configure direct TLS with `PI4_NOC_TLS_CERT_FILE` and `PI4_NOC_TLS_KEY_FILE`, set `PI4_NOC_HOST`/`PI4_NOC_PORT` to the TLS listener (normally `0.0.0.0`/`443`), and use the matching HTTPS URL. The sidecar refuses a non-loopback bind without both certificate files, and the browser login refuses to submit a PAM password from an HTTP page. A certificate/key pair must be provisioned and renewed outside this repository; the service remains loopback-only until that boundary is configured.
 
 ## Ops Notifications
 
@@ -34,7 +40,7 @@ Failed morning deliveries are retried every 30 minutes until one succeeds that d
 Webhook delivery defaults to JSON. Set `PI4_NOC_NOTIFY_WEBHOOK_FORMAT=form` for form-encoded relay providers such as FormSubmit.
 Webhook requests allow 30 seconds by default; override this with `PI4_NOC_NOTIFY_WEBHOOK_TIMEOUT_SECONDS` when a provider has a stricter latency requirement.
 
-## Pi4 Backups And Restore Drills
+## Pi4 Backups And Restore Drills (historical reference)
 
 The installer deploys `/usr/local/sbin/pi4-backup` and `/usr/local/sbin/pi4-restore-drill` with `pi4-backup.timer` and `pi4-restore-drill.timer`.
 
@@ -54,7 +60,7 @@ Relay status distinguishes confirmed webhook deliveries from retained rows that 
 
 Other host monitors may use the same protected topic; each publisher identifies its originating device in the alert title. The Pi4 relay now owns eventual FormSubmit delivery for the shared topic. Legacy `PI5_ALERTS_NOTIFY_*` names remain read-only compatibility fallbacks during the migration soak, while Pi4 uses `PI4_NOC_NOTIFY_*` or canonical `CABRERA_ALERT_RELAY_*` settings.
 
-## Pi4 Power And Data HDD Health
+## Pi4 Power And Data HDD Health (historical reference)
 
 `/mnt/ssd` is the compatibility mount path for the current rotational WDC USB data HDD; the dashboard labels it as `Data HDD` and reports the detected model, media type, transport, and rotational flag. Moving write-heavy data to a real SSD still requires a physical device and a controlled migration.
 
@@ -66,7 +72,7 @@ SMART reads use the root-owned fixed `smart_health` helper for the HDD's persist
 
 The unused Uptime Kuma, synthetic smoke, and local registry workloads were retired from k3s. Their existing host data directories remain untouched so retirement does not destructively erase historical state.
 
-## Pi4 Balanced Performance Profile
+## Pi4 Balanced Performance Profile (historical reference)
 
 `scripts/pi4-performance-profile.sh` provides `audit`, `apply`, and `verify` commands. The profile keeps the 600 MHz–1.8 GHz range and `arm_boost=1`, switches the governor to `ondemand`, installs the canonical k3s network/storage settings while disabling packaged `metrics-server` and `local-storage`, changes AdGuard query-log retention to seven days through its current API, and disables the unused desktop, display helpers, Wi-Fi, Bluetooth, and Samba AD DC services. Removing metrics-server intentionally makes `kubectl top` unavailable on this node.
 
@@ -82,26 +88,27 @@ Dashboard collectors default to 2 seconds for host counters, 15 seconds for serv
 
 The k3s inventory collector reuses a verified local API client between refreshes and retains the single batched `kubectl` read only as a fallback. Snapshot serialization is shared by revision across SSE clients, operations checks share one certificate-verifying TLS opener, and unchanged backup archives/checksums reuse integrity results keyed by path, size, and modification time.
 
-## Pi4 Update Policy
+## Pi4 Update Policy (historical reference)
 
 APT refresh and unattended security updates are enabled. `config/apt/52pi4-maintenance.conf` explicitly disables unattended reboots, so kernel, EEPROM, and k3s restarts stay inside a maintenance window with backup, boot-state, storage, pod, and endpoint validation. Retain the previous k3s binary and kernel packages until the updated node has passed those checks.
 
 ## Remote Access
 
-Cabrera Network is intended to stay private. Remote access should use Tailscale with the Pi4 as a subnet router for `192.168.0.0/24`; do not expose the dashboard with router port forwarding.
+Cabrera Network is intended to stay private. The former Pi4 dashboard used Tailscale subnet routing for `192.168.0.0/24`; current estate access to MacMiniOps and its application endpoints uses the configured Mac mini Tailnet routes. Do not expose either surface with router port forwarding.
 
-Once Tailscale is connected on an approved device, use the normal LAN URL:
+Once Tailscale is connected on an approved device, use the configured HTTPS dashboard URL (for example, the HTTPS hostname published by Tailscale Serve or the direct TLS listener):
 
 ```text
-http://192.168.0.101/
+https://dashboard.example.tailnet/
 ```
 
-The same subnet route keeps the dashboard's Web Apps links usable remotely, including AdGuard `:8080` and GRID `:8090` / `:7777`.
+The Mac mini Tailnet routes keep the current Web Apps links usable remotely. The links are navigation only; authoritative health comes from the MacMiniOps monitor contract above.
 
 ## Validation Notes
 
 - Backend syntax smoke: `python3 -m py_compile server/app.py server/k3s_client.py server/sudo_ops.py server/tplink_collector.py`.
 - Frontend build smoke: `npm run build`.
-- Live validation: `systemctl is-active pi4-noc.service cabrera-portfolio.service cabrera-programs.service`, the Wedding/EagleEye/Work deployments are Ready, the Web Apps panel shows every retained link `online`, and GRID reports `1/1 ready`.
+- Historical live validation: former Pi4 unit/deployment checks and Pi4-local Web Apps status are retained in the dated progress record above, not as current estate gates.
+- Current estate validation: MacMiniOps/Kuma owns the five current application checks listed above; no live-green claim is made by this repository for remote links without a current check result.
 
 See `MEMORY.md` for project memory, live service notes, and gotchas.
