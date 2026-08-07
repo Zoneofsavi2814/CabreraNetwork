@@ -1,5 +1,5 @@
 [Unit]
-Description=Run Pi4 off-host restore drill weekly
+Description=Run Pi4 isolated local restore drill weekly
 
 [Timer]
 OnCalendar=Mon *-*-* 03:10:00

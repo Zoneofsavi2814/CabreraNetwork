@@ -17,6 +17,37 @@ SECRET_RE = re.compile(r"(?i)(password|passwd|token|secret|apikey|api_key|author
 TRUTHY = {"1", "true", "yes", "on"}
 FALSY = {"0", "false", "no", "off"}
 
+STATUS_ICONS = {"ok": "🟢", "warn": "🟡", "fail": "🔴"}
+NBSP = "\u00a0"  # non-breaking space
+DIVIDER = "─" * 26
+
+
+def status_icon(status: str | None) -> str:
+    return STATUS_ICONS.get(str(status or "").strip().lower(), "⚪")
+
+
+def field_label(text: str) -> str:
+    # Form relay backends (PHP-style) rewrite spaces and dots in field names
+    # to underscores; non-breaking spaces survive and render as plain spaces.
+    return text.replace(" ", NBSP).replace(".", NBSP)
+
+
+def friendly_time(ts: float) -> str:
+    moment = datetime.fromtimestamp(ts)
+    clock = moment.strftime("%I:%M %p").lstrip("0")
+    return f"{moment.strftime('%A, %B')} {moment.day} · {clock}"
+
+
+def friendly_stamp(value: object) -> str:
+    try:
+        return friendly_time(datetime.fromisoformat(str(value)).timestamp())
+    except (TypeError, ValueError):
+        return str(value or "unknown")
+
+
+def pluralize(count: int, noun: str) -> str:
+    return f"{count} {noun}{'' if count == 1 else 's'}"
+
 
 def redact(text: str) -> str:
     return SECRET_RE.sub(r"\1\2<redacted>", text or "")
@@ -71,92 +102,168 @@ def summary_line(ops: dict) -> str:
     ok = int(summary.get("ok") or 0)
     warn = int(summary.get("warn") or 0)
     fail = int(summary.get("fail") or 0)
-    status = str(summary.get("status") or "unknown").upper()
-    return f"{status}: {ok} ok, {warn} warn, {fail} fail across {total} checks"
+    if total and not warn and not fail:
+        return f"🟢 All {pluralize(total, 'check')} passing"
+    parts = []
+    if fail:
+        parts.append(f"🔴 {fail} failing")
+    if warn:
+        parts.append(f"🟡 {pluralize(warn, 'warning')}")
+    parts.append(f"🟢 {ok} passing")
+    return f"{' · '.join(parts)} ({pluralize(total, 'check')})"
 
 
 def format_check(row: dict) -> str:
-    prefix = f"[{str(row.get('status', 'unknown')).upper()}]"
+    icon = status_icon(row.get("status"))
     host = row.get("host") or "Unknown host"
     label = row.get("label") or row.get("id") or "Unknown check"
     message = row.get("message") or "no detail"
     cadence = row.get("cadenceLabel") or row.get("cadenceId") or "unknown cadence"
-    return redact(f"- {prefix} {host} / {label} ({cadence}): {message}")
+    return redact(f"{icon} {host} · {label} — {message} ({cadence})")
 
 
 def limited_lines(rows: list[dict], limit: int = 20) -> list[str]:
     lines = [format_check(row) for row in rows[:limit]]
     if len(rows) > limit:
-        lines.append(f"- ... {len(rows) - limit} more")
+        lines.append(f"… plus {len(rows) - limit} more on the dashboard")
     return lines
 
 
 def morning_subject(ops: dict) -> str:
     summary = ops.get("summary", {}) or {}
+    total = int(summary.get("total") or 0)
     fail = int(summary.get("fail") or 0)
     warn = int(summary.get("warn") or 0)
     if fail:
-        return f"Cabrera Network morning ops: {fail} critical failure(s)"
+        detail = f"{fail} failing" + (f", {pluralize(warn, 'warning')}" if warn else "")
+        return f"🔴 Cabrera Network · Morning report — {detail}"
     if warn:
-        return f"Cabrera Network morning ops: {warn} warning(s)"
-    return "Cabrera Network morning ops: all green"
+        return f"🟡 Cabrera Network · Morning report — {pluralize(warn, 'warning')} to review"
+    checks = f" ({pluralize(total, 'check')})" if total else ""
+    return f"🟢 Cabrera Network · Morning report — all green{checks}"
 
 
 def critical_subject(failures: list[dict]) -> str:
     count = len(failures)
     if count == 1:
         item = failures[0]
-        return f"Cabrera Network critical alert: {item.get('label', item.get('id', 'check'))}"
-    return f"Cabrera Network critical alert: {count} checks failing"
+        label = item.get("label", item.get("id", "check"))
+        host = str(item.get("host") or "").strip()
+        where = f" on {host}" if host else ""
+        return f"🚨 Cabrera Network · {label}{where} is failing"
+    return f"🚨 Cabrera Network · {count} checks failing"
 
 
-def render_morning_body(ops: dict, due_configs: list[dict], now: float) -> str:
-    due_labels = ", ".join(cfg.get("label", cfg.get("id", "unknown")) for cfg in due_configs) or "unknown"
-    checks = iter_checks(ops)
-    morning_rows = [row for row in checks if row.get("cadenceId") == "morning"]
+def split_unhealthy(ops: dict) -> tuple[list[dict], list[dict]]:
     unhealthy = unhealthy_checks(ops)
+    fails = [row for row in unhealthy if row.get("status") == "fail"]
+    warns = [row for row in unhealthy if row.get("status") == "warn"]
+    return fails, warns
+
+
+def is_retry_run(due_configs: list[dict]) -> bool:
+    return any("retry" in str(cfg.get("label", "")).lower() for cfg in due_configs)
+
+
+ALL_CLEAR_TEXT = "Every check reported healthy overnight. Nothing needs your attention today."
+
+
+def render_morning_body(ops: dict, due_configs: list[dict], now: float, link: str | None = None) -> str:
+    morning_rows = [row for row in iter_checks(ops) if row.get("cadenceId") == "morning"]
+    fails, warns = split_unhealthy(ops)
+    title = "MORNING REPORT" + (" · RETRY" if is_retry_run(due_configs) else "")
 
     lines = [
-        "Cabrera Network morning operations digest",
-        f"Generated: {datetime.fromtimestamp(now).isoformat()}",
-        f"Snapshot: {ops.get('updatedAt', 'unknown')}",
-        f"Cadence run: {due_labels}",
+        f"🛰️  CABRERA NETWORK — {title}",
+        friendly_time(now),
+        DIVIDER,
         "",
-        summary_line(ops),
+        f"📊 Scorecard — {summary_line(ops)}",
     ]
-
+    if fails:
+        lines.extend(["", "🔴 Failing now"])
+        lines.extend(limited_lines(fails, limit=12))
+    if warns:
+        lines.extend(["", "🟡 Warnings"])
+        lines.extend(limited_lines(warns, limit=12))
+    if not fails and not warns:
+        lines.extend(["", f"✅ {ALL_CLEAR_TEXT}"])
     if morning_rows:
-        lines.extend(["", "Morning checks:"])
+        lines.extend(["", "🌅 Morning checks"])
         lines.extend(limited_lines(morning_rows, limit=10))
-
-    if unhealthy:
-        lines.extend(["", "Current warn/fail checks:"])
-        lines.extend(limited_lines(unhealthy, limit=20))
-    else:
-        lines.extend(["", "No warn/fail checks are currently active."])
+    lines.extend(["", DIVIDER])
+    if link:
+        lines.append(f"🔗 Dashboard: {link}")
+    lines.append(f"Snapshot {friendly_stamp(ops.get('updatedAt'))} · pi4-noc ops center")
 
     return redact("\n".join(lines).strip() + "\n")
 
 
-def render_critical_body(ops: dict, failures: list[dict], now: float) -> str:
+def render_critical_body(ops: dict, failures: list[dict], now: float, link: str | None = None) -> str:
     all_failures = unhealthy_checks(ops, {"fail"})
     lines = [
-        "Cabrera Network critical red alert",
-        f"Generated: {datetime.fromtimestamp(now).isoformat()}",
-        f"Snapshot: {ops.get('updatedAt', 'unknown')}",
+        "🚨 CABRERA NETWORK — CRITICAL ALERT",
+        friendly_time(now),
+        DIVIDER,
         "",
-        summary_line(ops),
-        "",
-        "New or repeated critical failures:",
+        "🔥 What broke",
     ]
     lines.extend(limited_lines(failures, limit=20))
+    lines.extend(["", f"📊 Scorecard — {summary_line(ops)}"])
 
     remaining = [row for row in all_failures if row.get("key") not in {item.get("key") for item in failures}]
     if remaining:
-        lines.extend(["", "Other active critical failures:"])
+        lines.extend(["", "⏳ Still failing from earlier"])
         lines.extend(limited_lines(remaining, limit=20))
 
+    lines.extend(["", DIVIDER])
+    if link:
+        lines.append(f"🔗 Dashboard: {link}")
+    lines.append(f"Snapshot {friendly_stamp(ops.get('updatedAt'))} · pi4-noc ops center")
+
     return redact("\n".join(lines).strip() + "\n")
+
+
+def morning_email_fields(ops: dict, due_configs: list[dict], now: float, link: str | None = None) -> dict[str, str]:
+    """Structured fields for form relay providers (FormSubmit's table/box
+    templates render each field as its own labeled row)."""
+    morning_rows = [row for row in iter_checks(ops) if row.get("cadenceId") == "morning"]
+    fails, warns = split_unhealthy(ops)
+    retry = " · retry" if is_retry_run(due_configs) else ""
+
+    fields: dict[str, str] = {
+        field_label("🛰️ Report"): f"Morning ops digest · {friendly_time(now)}{retry}",
+        field_label("📊 Scorecard"): summary_line(ops),
+    }
+    if fails:
+        fields[field_label("🔴 Failing now")] = "\n".join(limited_lines(fails, limit=12))
+    if warns:
+        fields[field_label("🟡 Warnings")] = "\n".join(limited_lines(warns, limit=12))
+    if not fails and not warns:
+        fields[field_label("✅ All clear")] = ALL_CLEAR_TEXT
+    if morning_rows:
+        fields[field_label("🌅 Morning checks")] = "\n".join(limited_lines(morning_rows, limit=10))
+    fields[field_label("🕐 Snapshot")] = friendly_stamp(ops.get("updatedAt"))
+    if link:
+        fields[field_label("🔗 Dashboard")] = link
+    return fields
+
+
+def critical_email_fields(ops: dict, failures: list[dict], now: float, link: str | None = None) -> dict[str, str]:
+    all_failures = unhealthy_checks(ops, {"fail"})
+    remaining = [row for row in all_failures if row.get("key") not in {item.get("key") for item in failures}]
+
+    fields: dict[str, str] = {
+        field_label("🚨 What broke"): "\n".join(limited_lines(failures, limit=20)),
+        field_label("📊 Scorecard"): summary_line(ops),
+    }
+    if remaining:
+        fields[field_label("⏳ Still failing")] = "\n".join(limited_lines(remaining, limit=20))
+    fields[field_label("🕐 Detected")] = friendly_time(now)
+    fields[field_label("🔍 Snapshot")] = friendly_stamp(ops.get("updatedAt"))
+    if link:
+        fields[field_label("🔗 Dashboard")] = link
+    return fields
 
 
 class NotificationManager:
@@ -183,6 +290,12 @@ class NotificationManager:
 
     def ntfy_configured(self) -> bool:
         return bool(self.env.get("PI4_NOC_NOTIFY_NTFY_URL"))
+
+    def dashboard_link(self) -> str:
+        return (
+            self.env.get("PI4_NOC_NOTIFY_LINK_URL", "").strip()
+            or self.env.get("PI4_NOC_NOTIFY_NTFY_CLICK_URL", "").strip()
+        )
 
     def critical_cooldown_seconds(self) -> float:
         try:
@@ -277,8 +390,10 @@ class NotificationManager:
         if morning.get("pendingDate") == today and not self._morning_retry_due(state, now):
             return None, False
         subject = morning_subject(ops)
-        body = render_morning_body(ops, due_configs, now)
-        delivered = self.send(subject, body, severity="morning")
+        link = self.dashboard_link() or None
+        body = render_morning_body(ops, due_configs, now, link=link)
+        fields = morning_email_fields(ops, due_configs, now, link=link)
+        delivered = self.send(subject, body, severity="morning", fields=fields)
         morning["lastAttemptAt"] = datetime.fromtimestamp(now).isoformat()
         self._record_delivery(state, "morning", delivered, now)
         if delivered:
@@ -296,24 +411,38 @@ class NotificationManager:
         active = critical.get("active", {})
         if not isinstance(active, dict):
             active = {}
+        recent = critical.get("recent", {})
+        if not isinstance(recent, dict):
+            recent = {}
 
         by_key = {row["key"]: row for row in failures}
         cooldown = self.critical_cooldown_seconds()
         alert_rows = []
         next_active = {}
+        next_recent = {}
         changed = False
 
-        for key, row in by_key.items():
-            previous = active.get(key, {}) if isinstance(active.get(key), dict) else {}
-            last_sent = float(previous.get("lastSentAt") or 0)
-            last_attempt = float(previous.get("lastAttemptEpoch") or 0)
-            if not last_attempt and previous.get("lastAttemptAt"):
+        def last_activity(entry: dict) -> float:
+            last_sent = float(entry.get("lastSentAt") or 0)
+            last_attempt = float(entry.get("lastAttemptEpoch") or 0)
+            if not last_attempt and entry.get("lastAttemptAt"):
                 try:
-                    last_attempt = datetime.fromisoformat(str(previous["lastAttemptAt"])).timestamp()
+                    last_attempt = datetime.fromisoformat(str(entry["lastAttemptAt"])).timestamp()
                 except (TypeError, ValueError):
                     last_attempt = 0
-            last_activity = max(last_sent, last_attempt)
-            if not previous or now - last_activity >= cooldown:
+            return max(last_sent, last_attempt)
+
+        for key, entry in recent.items():
+            if not isinstance(entry, dict):
+                continue
+            activity = last_activity(entry)
+            if activity and now - activity < cooldown:
+                next_recent[key] = dict(entry)
+
+        for key, row in by_key.items():
+            previous = active.get(key, {}) if isinstance(active.get(key), dict) else next_recent.pop(key, {})
+            activity = last_activity(previous)
+            if not previous or now - activity >= cooldown:
                 alert_rows.append(row)
             entry = {
                 "id": row.get("id"),
@@ -331,14 +460,26 @@ class NotificationManager:
                 entry["lastAttemptEpoch"] = previous.get("lastAttemptEpoch")
             next_active[key] = entry
 
+        recovered_at = datetime.fromtimestamp(now).isoformat()
+        for key, entry in active.items():
+            if key in by_key or not isinstance(entry, dict):
+                continue
+            activity = last_activity(entry)
+            if activity and now - activity < cooldown:
+                recovered = dict(entry)
+                recovered["recoveredAt"] = recovered.get("recoveredAt") or recovered_at
+                next_recent[key] = recovered
+
         if set(active.keys()) != set(next_active.keys()):
             changed = True
 
         result = None
         if alert_rows:
             subject = critical_subject(alert_rows)
-            body = render_critical_body(ops, alert_rows, now)
-            delivered = self.send(subject, body, severity="critical")
+            link = self.dashboard_link() or None
+            body = render_critical_body(ops, alert_rows, now, link=link)
+            fields = critical_email_fields(ops, alert_rows, now, link=link)
+            delivered = self.send(subject, body, severity="critical", fields=fields)
             attempt_at = datetime.fromtimestamp(now).isoformat()
             self._record_delivery(state, "critical", delivered, now)
             for row in alert_rows:
@@ -353,13 +494,18 @@ class NotificationManager:
 
         if active != next_active:
             changed = True
+        if recent != next_recent:
+            changed = True
         critical["active"] = next_active
+        critical["recent"] = next_recent
         critical["lastCheckedAt"] = datetime.fromtimestamp(now).isoformat()
         return result, changed
 
-    def send(self, subject: str, body: str, *, severity: str = "info") -> bool:
+    def send(self, subject: str, body: str, *, severity: str = "info", fields: dict[str, str] | None = None) -> bool:
         subject = redact(subject)
         body = redact(body)
+        if fields:
+            fields = {key: redact(str(value)) for key, value in fields.items() if str(value).strip()}
         if self.dry_run():
             print(f"pi4-noc notification dry-run [{severity}]: {subject}", flush=True)
             return True
@@ -383,7 +529,7 @@ class NotificationManager:
         if self.webhook_configured() and not delivered:
             attempted = True
             try:
-                self.send_webhook(subject, body, severity=severity)
+                self.send_webhook(subject, body, severity=severity, fields=fields)
                 delivered = True
             except Exception as exc:
                 print(f"pi4-noc webhook notification failed: {redact(str(exc))}", flush=True)
@@ -480,7 +626,7 @@ class NotificationManager:
             return ""
         return Path(password_file).read_text(encoding="utf-8").strip()
 
-    def send_webhook(self, subject: str, body: str, *, severity: str) -> None:
+    def send_webhook(self, subject: str, body: str, *, severity: str, fields: dict[str, str] | None = None) -> None:
         url = self.env.get("PI4_NOC_NOTIFY_WEBHOOK_URL", "").strip()
         if not url:
             raise ValueError("PI4_NOC_NOTIFY_WEBHOOK_URL is required")
@@ -491,22 +637,32 @@ class NotificationManager:
             "body": body,
             "sentAt": datetime.now().isoformat(),
         }
+        if fields:
+            payload["fields"] = fields
         headers = {"Accept": "application/json", "User-Agent": "pi4-noc/notifications"}
         if self.env.get("PI4_NOC_NOTIFY_WEBHOOK_REFERER", "").strip():
             headers["Referer"] = self.env["PI4_NOC_NOTIFY_WEBHOOK_REFERER"].strip()
         if self.env.get("PI4_NOC_NOTIFY_WEBHOOK_FORMAT", "json").strip().lower() in {"form", "form-urlencoded", "x-www-form-urlencoded"}:
-            form_payload = {
-                "name": self.env.get("PI4_NOC_NOTIFY_WEBHOOK_NAME", "Cabrera Network Ops Center"),
-                "email": self.env.get("PI4_NOC_NOTIFY_WEBHOOK_FROM", "pi4-noc@cabrera-network.local"),
-                "subject": subject,
-                "_subject": subject,
-                "message": body,
-                "source": payload["source"],
-                "severity": severity,
-                "sentAt": payload["sentAt"],
-                "_captcha": self.env.get("PI4_NOC_NOTIFY_WEBHOOK_CAPTCHA", "false"),
-                "_template": self.env.get("PI4_NOC_NOTIFY_WEBHOOK_TEMPLATE", "table"),
-            }
+            form_payload: dict[str, str] = {}
+            if fields:
+                # Each field renders as its own labeled row in the provider's
+                # email template; plumbing values stay out of the visible email.
+                form_payload.update(fields)
+            else:
+                form_payload.update(
+                    {
+                        "name": self.env.get("PI4_NOC_NOTIFY_WEBHOOK_NAME", "Cabrera Network Ops Center"),
+                        "email": self.env.get("PI4_NOC_NOTIFY_WEBHOOK_FROM", "pi4-noc@cabrera-network.local"),
+                        "subject": subject,
+                        "message": body,
+                        "source": payload["source"],
+                        "severity": severity,
+                        "sentAt": payload["sentAt"],
+                    }
+                )
+            form_payload["_subject"] = subject
+            form_payload["_captcha"] = self.env.get("PI4_NOC_NOTIFY_WEBHOOK_CAPTCHA", "false")
+            form_payload["_template"] = self.env.get("PI4_NOC_NOTIFY_WEBHOOK_TEMPLATE", "table")
             data = urlparse.urlencode(form_payload).encode("utf-8")
             headers["Content-Type"] = "application/x-www-form-urlencoded"
         else:

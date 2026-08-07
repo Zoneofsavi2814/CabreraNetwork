@@ -1,0 +1,20 @@
+#!/bin/sh
+set -eu
+
+umask 077
+export LANG=C
+export LC_ALL=C
+unset CDPATH ENV BASH_ENV PYTHONHOME PYTHONPATH
+
+case "${SSH_ORIGINAL_COMMAND-}" in
+    'probe five-minute') cadence='five-minute' ;;
+    'probe hourly') cadence='hourly' ;;
+    'probe morning') cadence='morning' ;;
+    'probe nightly') cadence='nightly' ;;
+    *)
+        printf '%s\n' '{"schemaVersion":1,"probeVersion":"1.0.0","probe":"pi4-operations","error":{"code":"command_not_allowed","message":"requested probe command is not allowed"}}'
+        exit 64
+        ;;
+esac
+
+exec /usr/bin/sudo -n -- /usr/local/libexec/pi4-ops-probe --cadence "$cadence"

@@ -95,7 +95,7 @@ const paths = {
     <line x1="12" y1="15" x2="17" y2="15"/>
   </>,
 
-  // Socket — Podman socket
+  // Socket / API listener
   brandSocket: <>
     <circle cx="12" cy="12" r="9"/>
     <circle cx="12" cy="12" r="3"/>
@@ -103,11 +103,6 @@ const paths = {
     <line x1="12" y1="18" x2="12" y2="21"/>
     <line x1="3" y1="12" x2="6" y2="12"/>
     <line x1="18" y1="12" x2="21" y2="12"/>
-  </>,
-
-  // Heartbeat — Uptime Kuma stand-in
-  brandHeartbeat: <>
-    <polyline points="2 12 6 12 9 4 15 20 18 12 22 12"/>
   </>,
 
   /* Topology */

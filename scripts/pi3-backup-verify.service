@@ -1,0 +1,53 @@
+[Unit]
+Description=Verify latest Pi3 backup in an isolated restore directory
+RequiresMountsFor=/mnt/ssd
+After=mnt-ssd.mount
+ConditionPathIsDirectory=/mnt/ssd/backups/pi3/incoming
+
+[Service]
+Type=oneshot
+User=pi3verify
+Group=pi3verify
+# The root condition atomically claims a new pair, resumes an interrupted
+# processing claim, or skips cleanly when neither exists.  It intentionally
+# does not depend on an incoming checksum after that checksum has been claimed.
+ExecCondition=+/usr/local/libexec/pi3-backup-claim --action prepare
+ExecStart=/usr/local/libexec/pi3-backup-verify --claimed
+ExecStopPost=+/usr/local/libexec/pi3-backup-claim --action finalize
+TimeoutStartSec=15m
+TimeoutStopSec=2m
+RuntimeMaxSec=15m
+MemoryMax=512M
+MemorySwapMax=0
+CPUQuota=50%
+TasksMax=16
+LimitFSIZE=2147483648
+LimitNOFILE=128
+CapabilityBoundingSet=
+AmbientCapabilities=
+NoNewPrivileges=yes
+PrivateDevices=yes
+PrivateIPC=yes
+PrivateTmp=yes
+ProtectControlGroups=yes
+ProtectHome=read-only
+ProtectKernelLogs=yes
+ProtectKernelModules=yes
+ProtectKernelTunables=yes
+ProtectProc=invisible
+ProtectSystem=strict
+ProcSubset=pid
+ReadWritePaths=/mnt/ssd/backups/pi3 /var/lib/pi3-backup /run/lock
+RestrictAddressFamilies=AF_UNIX
+RestrictNamespaces=yes
+RestrictRealtime=yes
+RestrictSUIDSGID=yes
+LockPersonality=yes
+MemoryDenyWriteExecute=yes
+SystemCallArchitectures=native
+SystemCallFilter=~@clock @cpu-emulation @debug @keyring @module @mount @obsolete @raw-io @reboot @swap
+SystemCallErrorNumber=EPERM
+UMask=0077
+
+[Install]
+WantedBy=multi-user.target

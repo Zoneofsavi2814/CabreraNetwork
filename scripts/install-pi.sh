@@ -17,6 +17,15 @@ sudo apt-get install -y python3-pamela sqlite3 rsync smartmontools
 
 sudo mkdir -p "$APP_DIR"
 sudo rsync -a --delete \
+  --exclude .git \
+  --exclude .claude \
+  --exclude .pytest_cache \
+  --exclude __pycache__ \
+  --exclude '*.pyc' \
+  --exclude 'deploy/pi5-*' \
+  --exclude 'scripts/rp5-*' \
+  --exclude 'scripts/rp5_*' \
+  --exclude 'server/test_*' \
   --exclude node_modules \
   --exclude .vite \
   --exclude 'Pi4 NOC Dashboard.html' \
@@ -25,7 +34,7 @@ sudo rsync -a --delete \
 sudo chown -R root:root "$APP_DIR"
 sudo find "$APP_DIR" -type d -exec chmod 0755 {} +
 sudo find "$APP_DIR" -type f -exec chmod 0644 {} +
-sudo chmod 0755 "$APP_DIR/server/app.py" "$APP_DIR/server/sudo_ops.py" "$APP_DIR/scripts/install-pi.sh" "$APP_DIR/scripts/pi4-backup.sh" "$APP_DIR/scripts/pi4-restore-drill.sh" "$APP_DIR/scripts/pi4-boot-state.py" "$APP_DIR/scripts/pi4-log2ram-apply-fix.sh" "$APP_DIR/scripts/pi4-log2ram-guard.sh"
+sudo chmod 0755 "$APP_DIR/server/app.py" "$APP_DIR/server/sudo_ops.py" "$APP_DIR/scripts/install-pi.sh" "$APP_DIR/scripts/pi4-backup.sh" "$APP_DIR/scripts/pi4-restore-drill.sh" "$APP_DIR/scripts/pi4-boot-state.py" "$APP_DIR/scripts/pi4-log2ram-apply-fix.sh" "$APP_DIR/scripts/pi4-log2ram-guard.sh" "$APP_DIR/scripts/pi4-performance-profile.sh" "$APP_DIR/scripts/cabrera-alert-relay.py"
 
 sudo install -d -o root -g pi4 -m 0750 "$SECRET_DIR"
 if [[ ! -f "$SECRET_FILE" ]]; then
@@ -57,6 +66,8 @@ sudo install -m 0644 "$APP_DIR/scripts/pi4-backup.service" /etc/systemd/system/p
 sudo install -m 0644 "$APP_DIR/scripts/pi4-backup.timer" /etc/systemd/system/pi4-backup.timer
 sudo install -m 0644 "$APP_DIR/scripts/pi4-restore-drill.service" /etc/systemd/system/pi4-restore-drill.service
 sudo install -m 0644 "$APP_DIR/scripts/pi4-restore-drill.timer" /etc/systemd/system/pi4-restore-drill.timer
+sudo install -m 0644 "$APP_DIR/scripts/cabrera-alert-relay.service" /etc/systemd/system/cabrera-alert-relay.service
+sudo install -m 0644 "$APP_DIR/scripts/cabrera-alert-relay.timer" /etc/systemd/system/cabrera-alert-relay.timer
 sudo install -m 0644 "$APP_DIR/scripts/pi4-smart-short.service" /etc/systemd/system/pi4-smart-short.service
 sudo install -m 0644 "$APP_DIR/scripts/pi4-smart-short.timer" /etc/systemd/system/pi4-smart-short.timer
 sudo install -m 0644 "$APP_DIR/scripts/pi4-smart-long.service" /etc/systemd/system/pi4-smart-long.service
@@ -70,6 +81,7 @@ sudo systemctl enable --now pi4-log2ram-guard.service
 sudo systemctl enable pi4-noc.service
 sudo systemctl enable --now pi4-backup.timer
 sudo systemctl enable --now pi4-restore-drill.timer
+sudo systemctl enable --now cabrera-alert-relay.timer
 sudo systemctl enable --now pi4-smart-short.timer
 sudo systemctl enable --now pi4-smart-long.timer
 sudo systemctl restart pi4-noc.service

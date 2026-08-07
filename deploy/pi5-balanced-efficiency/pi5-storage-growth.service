@@ -1,0 +1,21 @@
+[Unit]
+Description=Hourly Raspberry Pi 5 PVC and SQLite WAL growth check
+Wants=network-online.target
+After=network-online.target k3s.service
+
+[Service]
+Type=oneshot
+User=pi5
+Group=pi5
+WorkingDirectory=/opt/pi5-critical-alerts
+Environment=PYTHONUNBUFFERED=1
+Environment=PI5_ALERTS_STATE_DIR=/var/lib/pi5-critical-alerts
+EnvironmentFile=-/etc/pi5-critical-alerts/notify.env
+EnvironmentFile=-/etc/pi5-critical-alerts/monitor.env
+ExecStart=/usr/bin/python3 /opt/pi5-critical-alerts/pi5_storage_growth.py
+Nice=15
+CPUWeight=10
+IOWeight=10
+IOSchedulingClass=best-effort
+IOSchedulingPriority=7
+

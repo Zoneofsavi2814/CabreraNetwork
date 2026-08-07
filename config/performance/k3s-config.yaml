@@ -1,0 +1,14 @@
+# Canonical Pi 4 k3s server configuration. Keep host-specific networking and
+# storage here so the systemd unit only needs to select this file.
+node-ip: "192.168.0.101"
+advertise-address: "192.168.0.101"
+tls-san:
+  - "192.168.0.101"
+data-dir: "/mnt/ssd/k3s"
+default-local-storage-path: "/mnt/ssd/k3s-storage"
+write-kubeconfig-mode: "0644"
+disable:
+  - traefik
+  - servicelb
+  - metrics-server
+  - local-storage

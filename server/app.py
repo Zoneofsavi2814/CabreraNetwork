@@ -17,6 +17,7 @@ import secrets
 import shlex
 import shutil
 import socket
+import ssl
 import subprocess
 import tarfile
 import threading
@@ -24,6 +25,7 @@ import time
 import uuid
 from collections import Counter, deque
 from datetime import datetime, timedelta
+from functools import lru_cache
 from pathlib import Path
 from urllib import error as urlerror
 from urllib import request as urlrequest
@@ -32,22 +34,55 @@ import psutil
 from flask import Flask, Response, jsonify, request, send_from_directory, session
 
 try:
+    from .k3s_client import K3sClient, K3sClientError
     from .notifications import NotificationManager
     from .tplink_collector import TplinkTopologyCollector
 except ImportError:  # pragma: no cover - used when app.py is executed directly on the Pi
+    from k3s_client import K3sClient, K3sClientError
     from notifications import NotificationManager
     from tplink_collector import TplinkTopologyCollector
+
+
+# The operations checks make several concurrent HTTPS requests every five
+# minutes.  Loading the platform CA bundle for every connection is expensive on
+# the Pi; one verified context/opener is safe to share across these read-only
+# requests.  AdGuard's authenticated local API remains on its separate path.
+OPS_SSL_CONTEXT = ssl.create_default_context()
+OPS_URL_OPENER = urlrequest.build_opener(urlrequest.HTTPSHandler(context=OPS_SSL_CONTEXT))
+
+
+def open_ops_url(req: urlrequest.Request, timeout: float):
+    return OPS_URL_OPENER.open(req, timeout=timeout)
+
+
+def bounded_refresh_seconds(name: str, default: float, minimum: float, maximum: float) -> float:
+    """Read a refresh interval without allowing accidental busy loops or stalls."""
+    raw = os.environ.get(name)
+    if raw is None:
+        return default
+    try:
+        value = float(raw)
+    except (TypeError, ValueError):
+        return default
+    if not math.isfinite(value) or value <= 0:
+        return default
+    return min(maximum, max(minimum, value))
+
 
 APP_ROOT = Path(__file__).resolve().parent.parent
 DIST_DIR = Path(os.environ.get("PI4_NOC_DIST", APP_ROOT / "dist"))
 SUDO_HELPER = Path(os.environ.get("PI4_NOC_SUDO_HELPER", APP_ROOT / "server" / "sudo_ops.py"))
 ADGUARD_CREDS = Path(os.environ.get("PI4_NOC_ADGUARD_CREDS", "/home/pi4/.adguard-home-admin"))
 LAN_IP = os.environ.get("PI4_NOC_LAN_IP", "192.168.0.101")
-PI5_IP = os.environ.get("PI4_NOC_PI5_IP", "192.168.0.94")
-PI5_SSH_TARGET = os.environ.get("PI4_NOC_PI5_SSH_TARGET", f"pi5@{PI5_IP}")
-PI5_PORTFOLIO_HEALTH_URL = os.environ.get(
-    "PI4_NOC_PI5_PORTFOLIO_HEALTH_URL",
-    "https://raspberrypi5.tail83be27.ts.net/api/health",
+MACMINI_TAILNET_BASE = "https://macmini.tail83be27.ts.net"
+MACMINIOPS_HEALTH_URL = f"{MACMINI_TAILNET_BASE}/healthz"
+GRID_WEB_HEALTH_URL = f"{MACMINI_TAILNET_BASE}:8090/healthz"
+GRID_MCP_HEALTH_URL = f"{MACMINI_TAILNET_BASE}:7777/healthz"
+WORK_HEALTH_URL = f"{MACMINI_TAILNET_BASE}:8081/healthz"
+PORTFOLIO_HEALTH_URL = f"{MACMINI_TAILNET_BASE}:9443/api/health"
+WEDDING_PUBLIC_HEALTH_URL = os.environ.get(
+    "PI4_NOC_WEDDING_HEALTH_URL",
+    "https://ann-and-chris.tail83be27.ts.net/healthz",
 )
 ROUTER_IP = os.environ.get("PI4_NOC_ROUTER_IP", "192.168.0.1")
 ROUTER_NAME = os.environ.get("PI4_NOC_ROUTER_NAME", "TP-Link Archer BE400")
@@ -55,6 +90,7 @@ SPEED_TEST_URL = os.environ.get("PI4_NOC_SPEED_TEST_URL", "https://speed.cloudfl
 SPEED_WARN_MBPS = float(os.environ.get("PI4_NOC_SPEED_WARN_MBPS", "10"))
 ROUTER_CREDS_FILE = Path(os.environ.get("PI4_NOC_ROUTER_CREDS", "/home/pi4/.pi4-noc-router-admin"))
 ROUTER_TOPOLOGY_FILE = Path(os.environ.get("PI4_NOC_ROUTER_TOPOLOGY", "/home/pi4/.pi4-noc-router-topology.json"))
+THERMAL_ZONE_TEMP = Path(os.environ.get("PI4_NOC_THERMAL_PATH", "/sys/class/thermal/thermal_zone0/temp"))
 DEVICE_ALIASES_FILE = Path(os.environ.get("PI4_NOC_DEVICE_ALIASES", "/home/pi4/.pi4-noc-device-aliases.json"))
 NETBIOS_NAME_LOOKUPS = os.environ.get("PI4_NOC_NETBIOS_NAMES", "0").lower() in {"1", "true", "yes"}
 AUTH_USER = os.environ.get("PI4_NOC_AUTH_USER", "pi4")
@@ -62,8 +98,16 @@ AUTH_SERVICE = os.environ.get("PI4_NOC_AUTH_SERVICE", "login")
 SESSION_SECRET_FILE = Path(os.environ.get("PI4_NOC_SESSION_SECRET_FILE", "/etc/pi4-noc/session-secret"))
 BOOT_STATE_FILE = Path(os.environ.get("PI4_NOC_BOOT_STATE_FILE", "/var/lib/pi4-boot-state/state.json"))
 BOOT_ID_FILE = Path(os.environ.get("PI4_NOC_BOOT_ID_FILE", "/proc/sys/kernel/random/boot_id"))
+PI4_NOC_PUBLIC_URL = os.environ.get("PI4_NOC_PUBLIC_URL", f"https://{LAN_IP}").rstrip("/")
+TLS_CERT_FILE = os.environ.get("PI4_NOC_TLS_CERT_FILE", "").strip()
+TLS_KEY_FILE = os.environ.get("PI4_NOC_TLS_KEY_FILE", "").strip()
 HISTORY_LEN = 60
 DATA_FS_UUID = os.environ.get("PI4_NOC_DATA_FS_UUID", "b0a1a356-3c0e-4f68-9c80-3379f662b4bc")
+HOT_REFRESH_SECONDS = bounded_refresh_seconds("PI4_NOC_HOT_REFRESH_SECONDS", 2, 1, 60)
+SERVICE_REFRESH_SECONDS = bounded_refresh_seconds("SERVICE_REFRESH_SECONDS", 15, 5, 300)
+HEAVY_REFRESH_SECONDS = bounded_refresh_seconds("HEAVY_REFRESH_SECONDS", 60, 15, 600)
+ROUTER_REFRESH_SECONDS = bounded_refresh_seconds("ROUTER_REFRESH_SECONDS", 120, 30, 1800)
+STORAGE_REFRESH_SECONDS = bounded_refresh_seconds("STORAGE_REFRESH_SECONDS", 1800, 300, 86400)
 
 DEFAULT_APS = [
     {
@@ -87,21 +131,31 @@ NAME_SOURCE_RANK = {"router": 60, "configured_ap": 55, "adguard": 45, "resolved"
 LINK_SOURCE_RANK = {"router": 60, "configured_ap": 55, "adguard": 15, "resolved": 10, "arp": 5}
 
 UNIT_CONFIG = [
-    {"id": "adguard", "label": "AdGuard Home", "unit": "AdGuardHome.service", "ports": ["53", "8080"], "glyph": "brandShield", "ui": f"http://{LAN_IP}:8080"},
-    {"id": "k3s", "label": "k3s", "unit": "k3s.service", "ports": ["6443"], "glyph": "brandCubes"},
-    {"id": "kuma", "label": "Uptime Kuma", "kind": "k3s", "namespace": "homelab", "workloadKind": "deployment", "workload": "uptime-kuma", "ports": ["3001"], "glyph": "brandHeartbeat", "ui": f"http://{LAN_IP}:3001"},
-    {"id": "grid", "label": "GRID", "kind": "k3s", "namespace": "homelab", "workloadKind": "deployment", "workload": "grid", "ports": ["8090", "7777"], "glyph": "globe", "ui": f"http://{LAN_IP}:8090"},
+    # These are local host facilities only; remote application health belongs
+    # to OPS_CHECK_CONFIG and the MacMiniOps monitor contract below.
+    {"id": "adguard", "label": "AdGuard Home (legacy Pi host row)", "unit": "AdGuardHome.service", "ports": ["53", "8080"], "glyph": "brandShield", "current": False},
+    {"id": "k3s", "label": "Wedding k3s", "unit": "k3s.service", "ports": ["6443"], "glyph": "brandCubes"},
+    {"id": "grid", "label": "GRID (legacy Pi host row)", "kind": "k3s", "namespace": "homelab", "workloadKind": "deployment", "workload": "grid", "ports": ["8090", "7777"], "glyph": "globe", "current": False},
+    {"id": "eagleeye", "label": "EagleEye (retired)", "kind": "k3s", "namespace": "eagleeye", "workloadKind": "deployment", "workload": "eagleeye", "ports": ["8098"], "glyph": "activity", "current": False},
+    {"id": "work-website", "label": "Work Website (retired Pi row)", "kind": "k3s", "namespace": "cabrera-work-website", "workloadKind": "deployment", "workload": "cabrera-work-website", "ports": ["8081"], "glyph": "globe", "current": False},
+    {"id": "portfolio", "label": "CabreraPortfolio (legacy Pi row)", "unit": "cabrera-portfolio.service", "ports": ["8099"], "glyph": "activity", "current": False},
+    {"id": "programs", "label": "CabreraPrograms (retired)", "unit": "cabrera-programs.service", "ports": ["8096"], "glyph": "brandTerminal", "current": False},
     {"id": "smbd", "label": "Samba (smbd)", "unit": "smbd.service", "ports": ["445"], "glyph": "brandFolderNet"},
     {"id": "nmbd", "label": "Samba (nmbd)", "unit": "nmbd.service", "ports": ["139"], "glyph": "brandFolderNet"},
     {"id": "ssh", "label": "SSH", "unit": "ssh.service", "ports": ["22"], "glyph": "brandTerminal"},
 ]
 
 WEB_APP_CONFIG = [
-    {"id": "cabrera-network", "label": "Cabrera Network", "url": f"http://{LAN_IP}/", "port": "80", "glyph": "activity", "kind": "dashboard"},
-    {"id": "adguard", "label": "AdGuard Home", "url": f"http://{LAN_IP}:8080/", "port": "8080", "glyph": "brandShield", "kind": "admin"},
-    {"id": "uptime-kuma", "label": "Uptime Kuma", "url": f"http://{LAN_IP}:3001/", "port": "3001", "glyph": "brandHeartbeat", "kind": "monitoring"},
-    {"id": "grid-wiki", "label": "GRID Wiki", "url": f"http://{LAN_IP}:8090/", "port": "8090", "glyph": "globe", "kind": "knowledge"},
-    {"id": "grid-api", "label": "GRID protected listener/API", "url": f"http://{LAN_IP}:7777/", "port": "7777", "glyph": "brandSocket", "kind": "api"},
+    # These are navigation links. Remote status remains unknown here; the
+    # actual health contract is OPS_CHECK_CONFIG and MacMiniOps/Kuma.
+    {"id": "macminiops", "label": "MacMiniOps", "url": f"{MACMINI_TAILNET_BASE}/", "port": "443", "glyph": "activity", "kind": "dashboard", "remote": True},
+    {"id": "adguard", "label": "AdGuard Home", "url": f"{MACMINI_TAILNET_BASE}:8080/", "port": "8080", "glyph": "brandShield", "kind": "admin", "remote": True},
+    {"id": "grid-wiki", "label": "GRID Wiki", "url": f"{MACMINI_TAILNET_BASE}:8090/", "port": "8090", "glyph": "globe", "kind": "knowledge", "remote": True},
+    {"id": "grid-api", "label": "GRID protected listener/API", "url": f"{MACMINI_TAILNET_BASE}:7777/", "port": "7777", "glyph": "brandSocket", "kind": "api", "remote": True},
+    {"id": "wedding", "label": "Wedding", "url": "https://ann-and-chris.tail83be27.ts.net/", "port": "443", "glyph": "globe", "kind": "site", "remote": True},
+    {"id": "portfolio", "label": "CabreraPortfolio", "url": f"{MACMINI_TAILNET_BASE}:9443/", "port": "9443", "glyph": "activity", "kind": "dashboard", "remote": True},
+    {"id": "work", "label": "Work Website", "url": f"{MACMINI_TAILNET_BASE}:8081/", "port": "8081", "glyph": "globe", "kind": "site", "remote": True},
+    {"id": "uptime-kuma", "label": "Uptime Kuma", "url": f"{MACMINI_TAILNET_BASE}:3001/", "port": "3001", "glyph": "activity", "kind": "monitoring", "remote": True},
 ]
 
 OPS_CADENCE_CONFIG = [
@@ -114,72 +168,25 @@ OPS_CADENCE_CONFIG = [
 OPS_CHECK_CONFIG = {
     "five-minute": [
         {"id": "gateway", "label": "Gateway reachability", "host": "Router", "kind": "ping", "target": ROUTER_IP, "failureStatus": "fail"},
-        {"id": "dns-resolver", "label": "DNS resolver", "host": "Pi4", "kind": "dns", "target": "example.com", "failureStatus": "fail"},
-        {"id": "pi4-power-throttle", "label": "Pi4 power/throttle", "host": "Pi4", "kind": "raspi-throttle", "failureStatus": "warn"},
-        {"id": "pi4-boot-state", "label": "Pi4 clean-shutdown state", "host": "Pi4", "kind": "boot-state", "path": str(BOOT_STATE_FILE), "failureStatus": "fail"},
+        {"id": "dns-resolver", "label": "DNS resolver", "host": "LAN", "kind": "dns", "target": "example.com", "failureStatus": "fail"},
         {"id": "wan-http", "label": "WAN HTTPS reachability", "host": "Internet", "kind": "http", "url": "https://one.one.one.one/cdn-cgi/trace", "timeout": 2.5, "failureStatus": "warn"},
         {"id": "wan-latency", "label": "WAN endpoint latency", "host": "Internet", "kind": "multi-http", "urls": ["https://one.one.one.one/cdn-cgi/trace", "https://www.google.com/generate_204", "https://cloudflare.com/cdn-cgi/trace"], "timeout": 4, "maxAvgMs": 1000, "failureStatus": "warn"},
-        {"id": "dns-latency", "label": "DNS latency", "host": "Pi4", "kind": "multi-dns", "targets": ["one.one.one.one", "google.com", "github.com"], "maxAvgMs": 500, "failureStatus": "warn"},
-        {"id": "pi4-noc", "label": "Cabrera Network", "host": "Pi4", "kind": "http", "url": f"http://{LAN_IP}/api/session", "expectJson": True, "failureStatus": "warn"},
-        {"id": "grid-web", "label": "GRID web/API", "host": "Pi4 k3s", "kind": "http", "url": f"http://{LAN_IP}:8090/healthz", "jsonField": "ok", "jsonEquals": True, "failureStatus": "fail"},
-        {"id": "grid-mcp", "label": "GRID MCP", "host": "Pi4 k3s", "kind": "http", "url": f"http://{LAN_IP}:7777/healthz", "jsonField": "ok", "jsonEquals": True, "failureStatus": "fail"},
-        {"id": "uptime-kuma", "label": "Uptime Kuma", "host": "Pi4 k3s", "kind": "http", "url": f"http://{LAN_IP}:3001/", "failureStatus": "warn"},
-        {"id": "coinbot", "label": "Coinbot API", "host": "Pi5 k3s", "kind": "http", "url": f"http://{PI5_IP}:8787/health", "jsonField": "status", "jsonEquals": "ok", "warnJsonField": "degraded", "failureStatus": "fail"},
-        {"id": "mission-control", "label": "Mission Control", "host": "Pi5 k3s", "kind": "http", "url": f"http://{PI5_IP}:8088/api/health", "jsonField": "status", "jsonEquals": "ok", "failureStatus": "fail"},
-        {"id": "eagleeye", "label": "EagleEye", "host": "Pi5 k3s", "kind": "http", "url": f"http://{PI5_IP}:8098/healthz", "jsonField": "status", "jsonEquals": "ok", "failureStatus": "warn"},
-        {"id": "programs", "label": "CabreraPrograms", "host": "Pi5", "kind": "http", "url": f"http://{PI5_IP}:8096/api/session", "expectJson": True, "failureStatus": "warn"},
-        {"id": "portfolio-api", "label": "Portfolio API", "host": "Pi5", "kind": "http", "url": PI5_PORTFOLIO_HEALTH_URL, "jsonField": "ok", "jsonEquals": True, "failureStatus": "fail"},
+        {"id": "dns-latency", "label": "DNS latency", "host": "LAN", "kind": "multi-dns", "targets": ["one.one.one.one", "google.com", "github.com"], "maxAvgMs": 500, "failureStatus": "warn"},
+        {"id": "macminiops", "label": "MacMiniOps", "host": "Mac mini", "kind": "http", "url": MACMINIOPS_HEALTH_URL, "failureStatus": "fail"},
+        {"id": "grid-web", "label": "GRID web/API", "host": "Mac mini", "kind": "http", "url": GRID_WEB_HEALTH_URL, "failureStatus": "fail"},
+        {"id": "grid-mcp", "label": "GRID MCP auth boundary", "host": "Mac mini", "kind": "http", "url": GRID_MCP_HEALTH_URL, "okStatuses": [401], "failureStatus": "fail"},
+        {"id": "wedding-public", "label": "Wedding public TLS/health", "host": "Pi4 Wedding Funnel", "kind": "http", "url": WEDDING_PUBLIC_HEALTH_URL, "attempts": 2, "timeout": 4, "failureStatus": "fail"},
+        {"id": "work", "label": "Work Website", "host": "Mac mini", "kind": "http", "url": WORK_HEALTH_URL, "failureStatus": "fail"},
+        {"id": "portfolio", "label": "CabreraPortfolio", "host": "Mac mini", "kind": "http", "url": PORTFOLIO_HEALTH_URL, "attempts": 2, "timeout": 2, "retryDelay": 0.2, "failureStatus": "fail"},
     ],
     "hourly": [
         {"id": "wan-speed", "label": "WAN speed sample", "host": "Internet", "kind": "speed-lite", "url": SPEED_TEST_URL, "timeout": 4, "minMbps": SPEED_WARN_MBPS, "failureStatus": "warn"},
         {"id": "k3s-release", "label": "k3s latest release", "host": "GitHub", "kind": "github-release", "repo": "k3s-io/k3s", "failureStatus": "warn"},
-        {"id": "hourly-backups", "label": "Backup verification", "host": "Pi4", "kind": "backup-recent", "path": "/mnt/ssd/backups", "maxAgeHours": 72, "verifyContents": True, "failureStatus": "warn"},
-        {"id": "offhost-backups", "label": "Off-host backup freshness", "host": "Pi5", "kind": "remote-backup-recent", "sshTarget": PI5_SSH_TARGET, "path": "/home/pi5/backups/pi4", "pattern": "pi4-backup-*.tgz", "maxAgeHours": 72, "failureStatus": "warn"},
-        {"id": "offhost-backup-parity", "label": "Off-host backup parity", "host": "Pi4/Pi5", "kind": "remote-backup-parity", "sshTarget": PI5_SSH_TARGET, "localPath": "/mnt/ssd/backups/pi4", "remotePath": "/home/pi5/backups/pi4", "pattern": "pi4-backup-*.tgz*", "failureStatus": "warn"},
-        {"id": "backup-artifacts", "label": "Backup artifact integrity", "host": "Pi4", "kind": "backup-artifacts", "path": "/mnt/ssd/backups", "maxArchives": 8, "maxChecksums": 8, "failureStatus": "warn"},
-        {"id": "pi4-k3s-node", "label": "Pi4 k3s node", "host": "Pi4 k3s", "kind": "k3s-local", "scope": "nodes", "failureStatus": "fail"},
-        {"id": "pi4-k3s-apps", "label": "Pi4 k3s apps", "host": "Pi4 k3s", "kind": "k3s-local", "scope": "workloads", "workloads": ["grid", "uptime-kuma", "local-registry", "homelab-smoke"], "failureStatus": "warn"},
-        {"id": "pi4-k3s-resources", "label": "Pi4 k3s resource guardrails", "host": "Pi4 k3s", "kind": "k3s-resources", "namespace": "homelab", "workloads": ["grid", "uptime-kuma", "local-registry", "homelab-smoke"], "failureStatus": "warn"},
-        {"id": "pi4-port-drift", "label": "Pi4 open-port drift", "host": "Pi4", "kind": "port-drift", "allow": ["tcp/22", "tcp/53", "tcp/80", "tcp/139", "tcp/445", "tcp/6443", "tcp/8080", "tcp/10250", "udp/53", "udp/137", "udp/138", "udp/8472", "udp/41641", "udp/5353"], "ignoreUdpAbove": 20000, "failureStatus": "warn"},
-        {"id": "pi5-k3s-node", "label": "Pi5 k3s node", "host": "Pi5 k3s", "kind": "ssh-k3s", "sshTarget": PI5_SSH_TARGET, "scope": "nodes", "failureStatus": "fail"},
-        {"id": "pi5-k3s-apps", "label": "Pi5 k3s apps", "host": "Pi5 k3s", "kind": "ssh-k3s", "sshTarget": PI5_SSH_TARGET, "scope": "workloads", "workloads": ["coinbot", "coinbot-website", "eagleeye"], "failureStatus": "warn"},
-        {"id": "pi5-systemd-failures", "label": "Pi5 failed units", "host": "Pi5", "kind": "ssh-systemd-failed", "sshTarget": PI5_SSH_TARGET, "failureStatus": "fail"},
-        {"id": "pi5-portfolio-sync-timer", "label": "Pi5 Portfolio sync timer", "host": "Pi5", "kind": "ssh-systemd-timer", "sshTarget": PI5_SSH_TARGET, "unit": "cabrera-portfolio-manual-sync.timer", "serviceUnit": "cabrera-portfolio-manual-sync.service", "maxLastHours": 36, "failureStatus": "warn"},
-        {"id": "pi5-tailscale", "label": "Pi5 Tailscale", "host": "Pi5", "kind": "ssh-systemd-unit", "sshTarget": PI5_SSH_TARGET, "unit": "tailscaled.service", "failureStatus": "fail"},
-        {"id": "pi5-system-headroom", "label": "Pi5 system headroom", "host": "Pi5", "kind": "ssh-pi-health", "sshTarget": PI5_SSH_TARGET, "path": "/", "maxDiskPct": 85, "maxTempC": 70, "failureStatus": "warn"},
-        {"id": "pi5-package-upgrades", "label": "Pi5 package upgrades", "host": "Pi5", "kind": "ssh-apt-upgrades", "sshTarget": PI5_SSH_TARGET, "warnCount": 25, "failureStatus": "warn"},
-        {"id": "grid-index", "label": "GRID index", "host": "Pi4 k3s", "kind": "http", "url": f"http://{LAN_IP}:8090/api/stats", "jsonField": "schema_version", "jsonEquals": 3, "failureStatus": "warn"},
-        {"id": "local-registry", "label": "Local registry", "host": "Pi4 k3s", "kind": "http", "url": f"http://{LAN_IP}:5000/v2/", "failureStatus": "warn"},
-        {"id": "portfolio-web", "label": "Portfolio web", "host": "Pi5", "kind": "http", "url": f"http://{PI5_IP}:8080/", "failureStatus": "fail"},
     ],
     "morning": [
         {"id": "brief", "label": "Morning service brief", "host": "Ops Center", "kind": "operations-brief", "failureStatus": "warn"},
-        {"id": "overnight-storage-events", "label": "Overnight storage events", "host": "Pi4", "kind": "journal-pattern", "since": "12 hours ago", "patterns": ["I/O error", "EXT4-fs error", "Buffer I/O", "blk_update_request", "mmc.*error", "sda.*error", "filesystem.*error", "read-only file system"], "failureStatus": "warn"},
     ],
-    "nightly": [
-        {"id": "logrotate-timer", "label": "Log rotation timer", "host": "Pi4", "kind": "systemd-timer", "unit": "logrotate.timer", "maxLastHours": 36, "failureStatus": "warn"},
-        {"id": "log2ram-flush", "label": "log2ram daily flush", "host": "Pi4", "kind": "systemd-timer", "unit": "log2ram-daily.timer", "maxLastHours": 36, "failureStatus": "warn"},
-        {"id": "tmpfiles-clean", "label": "Temp/log cleanup timer", "host": "Pi4", "kind": "systemd-timer", "unit": "systemd-tmpfiles-clean.timer", "maxLastHours": 48, "failureStatus": "warn"},
-        {"id": "dpkg-backup", "label": "Package DB backup timer", "host": "Pi4", "kind": "systemd-timer", "unit": "dpkg-db-backup.timer", "maxLastHours": 36, "failureStatus": "warn"},
-        {"id": "pi4-backup-timer", "label": "Pi4 backup timer", "host": "Pi4", "kind": "systemd-timer", "unit": "pi4-backup.timer", "failureStatus": "warn"},
-        {"id": "restore-drill-timer", "label": "Restore drill timer", "host": "Pi4", "kind": "systemd-timer", "unit": "pi4-restore-drill.timer", "failureStatus": "warn"},
-        {"id": "restore-drill-state", "label": "Restore drill freshness", "host": "Pi4/Pi5", "kind": "file-freshness", "path": "/var/lib/pi4-backup/last-restore-drill.json", "maxAgeHours": 192, "jsonField": "status", "jsonEquals": "ok", "failureStatus": "warn"},
-        {"id": "backup-service-result", "label": "Pi4 backup result", "host": "Pi4", "kind": "systemd-service-result", "unit": "pi4-backup.service", "allowNever": True, "failureStatus": "fail"},
-        {"id": "restore-drill-service-result", "label": "Restore drill result", "host": "Pi4", "kind": "systemd-service-result", "unit": "pi4-restore-drill.service", "allowNever": True, "failureStatus": "fail"},
-        {"id": "filesystem-trim", "label": "Filesystem trim timer", "host": "Pi4", "kind": "systemd-timer", "unit": "fstrim.timer", "maxLastHours": 192, "failureStatus": "warn"},
-        {"id": "kernel-io-health", "label": "Kernel storage/power errors", "host": "Pi4", "kind": "journal-pattern", "since": "24 hours ago", "patterns": ["I/O error", "EXT4-fs error", "Buffer I/O", "blk_update_request", "mmc.*error", "sda.*error", "filesystem.*error", "read-only file system", "Undervoltage detected"], "failureStatus": "warn"},
-        {"id": "root-disk", "label": "Root disk headroom", "host": "Pi4", "kind": "disk", "path": "/", "maxPct": 85, "maxInodePct": 85, "failureStatus": "warn"},
-        {"id": "data-hdd-disk", "label": "Data HDD headroom", "host": "Pi4", "kind": "disk", "path": "/mnt/ssd", "maxPct": 85, "maxInodePct": 85, "failureStatus": "warn"},
-        {"id": "data-hdd-mount", "label": "Data HDD mount integrity", "host": "Pi4", "kind": "mount", "path": "/mnt/ssd", "expectedUuid": "b0a1a356-3c0e-4f68-9c80-3379f662b4bc", "expectedFstype": "ext4", "requireReadWrite": True, "failureStatus": "fail"},
-        {"id": "brain-mount", "label": "GRID brain mount", "host": "Pi4", "kind": "mount", "path": "/mnt/nas/brain", "expectedUuid": "b0a1a356-3c0e-4f68-9c80-3379f662b4bc", "expectedFstype": "ext4", "requireReadWrite": True, "failureStatus": "fail"},
-        {"id": "data-hdd-smart", "label": "Data HDD SMART health", "host": "Pi4", "kind": "smart", "device": "/dev/sda", "maxTempC": 50, "unavailableStatus": "warn", "failureStatus": "fail"},
-        {"id": "data-hdd-smart-short-timer", "label": "Data HDD short SMART test timer", "host": "Pi4", "kind": "systemd-timer", "unit": "pi4-smart-short.timer", "failureStatus": "warn"},
-        {"id": "data-hdd-smart-long-timer", "label": "Data HDD long SMART test timer", "host": "Pi4", "kind": "systemd-timer", "unit": "pi4-smart-long.timer", "failureStatus": "warn"},
-        {"id": "brain-freshness", "label": "GRID brain freshness", "host": "Pi4", "kind": "path-freshness", "path": "/mnt/nas/brain", "maxAgeHours": 168, "recursive": True, "failureStatus": "warn"},
-        {"id": "brain-vault-parity", "label": "GRID vault path parity", "host": "Pi4", "kind": "path-parity", "source": "/mnt/nas/brain", "target": "/mnt/ssd/nas/brain", "pattern": "*.md", "maxHashFiles": 50, "failureStatus": "warn"},
-        {"id": "grid-vault-sync", "label": "GRID vault/index sync", "host": "Pi4 k3s", "kind": "grid-sync", "url": f"http://{LAN_IP}:8090/api/stats", "minNotes": 1, "maxScanAgeMinutes": 30, "failureStatus": "warn"},
-        {"id": "backup-retention", "label": "Backup retention pressure", "host": "Pi4", "kind": "directory-retention", "path": "/mnt/ssd/backups", "maxEntries": 50, "maxOldestDays": 180, "failureStatus": "warn"},
-    ],
+    "nightly": [],
 }
 
 ALLOWED_UNITS = {row["unit"] for row in UNIT_CONFIG if "unit" in row}
@@ -189,6 +196,33 @@ SAFE_NAME_RE = re.compile(r"^[A-Za-z0-9_.@:/-]{1,160}$")
 SECRET_RE = re.compile(r"(?i)(password|passwd|token|secret|apikey|api_key|authorization)([=: ]+)(\S+)")
 MAC_RE = re.compile(r"^(?:[0-9a-f]{2}[:-]){5}[0-9a-f]{2}$", re.I)
 AUTH_EXEMPT_API_PATHS = {"/api/session", "/api/login", "/api/logout"}
+
+
+def parse_trusted_proxy_networks(value: str) -> tuple[ipaddress.IPv4Network | ipaddress.IPv6Network, ...]:
+    networks = []
+    for token in re.split(r"[\s,]+", value.strip()):
+        if not token:
+            continue
+        try:
+            if "/" not in token:
+                token = f"{token}/128" if ":" in token else f"{token}/32"
+            networks.append(ipaddress.ip_network(token, strict=False))
+        except ValueError:
+            # A malformed trust list must disable proxy-header trust rather
+            # than leaving a partially trusted deployment ambiguous.
+            return ()
+    return tuple(networks)
+
+
+TRUSTED_PROXY_NETWORKS = parse_trusted_proxy_networks(os.environ.get("PI4_NOC_TRUSTED_PROXY_CIDRS", ""))
+
+
+try:
+    TRUSTED_PROXY_HOPS = max(1, min(8, int(os.environ.get("PI4_NOC_TRUSTED_PROXY_HOPS", "1"))))
+except (TypeError, ValueError):
+    TRUSTED_PROXY_HOPS = 1
+
+
 LOGIN_FAILURES: dict[str, deque[float]] = {}
 LOGIN_LOCK = threading.RLock()
 THROTTLE_CURRENT_FLAGS = {
@@ -267,8 +301,89 @@ def verify_login_password(password: str) -> bool:
         return False
 
 
+def request_peer_ip() -> ipaddress.IPv4Address | ipaddress.IPv6Address | None:
+    raw_peer = (getattr(request, "remote_addr", None) or "").strip()
+    if not raw_peer:
+        return None
+    try:
+        return ipaddress.ip_address(raw_peer)
+    except ValueError:
+        return None
+
+
+def trusted_proxy_peer(peer: ipaddress.IPv4Address | ipaddress.IPv6Address | None) -> bool:
+    return bool(peer and any(peer in network for network in TRUSTED_PROXY_NETWORKS))
+
+
+def forwarded_chain() -> list[ipaddress.IPv4Address | ipaddress.IPv6Address] | None:
+    raw_header = getattr(request, "headers", {}).get("X-Forwarded-For", "")
+    if not raw_header.strip():
+        return None
+    chain = []
+    for value in raw_header.split(","):
+        try:
+            chain.append(ipaddress.ip_address(value.strip()))
+        except ValueError:
+            return None
+    return chain or None
+
+
+def validated_forwarded_client_ip() -> ipaddress.IPv4Address | ipaddress.IPv6Address | None:
+    peer = request_peer_ip()
+    if not trusted_proxy_peer(peer):
+        return None
+    chain = forwarded_chain()
+    if not chain or len(chain) < TRUSTED_PROXY_HOPS:
+        return None
+
+    # For more than one configured hop, every address between the selected
+    # client and the socket peer must itself be in the trusted proxy list.
+    # This mirrors the right-to-left proxy-chain validation used by standard
+    # proxy middleware while keeping the no-proxy default fail-closed.
+    proxy_chain = chain[-(TRUSTED_PROXY_HOPS - 1):] if TRUSTED_PROXY_HOPS > 1 else []
+    if any(not trusted_proxy_peer(proxy) for proxy in proxy_chain):
+        return None
+    return chain[-TRUSTED_PROXY_HOPS]
+
+
 def login_client_key() -> str:
-    return request.headers.get("X-Forwarded-For", request.remote_addr or "local").split(",")[0].strip() or "local"
+    peer = request_peer_ip()
+    forwarded = validated_forwarded_client_ip()
+    if forwarded is not None:
+        return str(forwarded)
+    if peer is not None:
+        return str(peer)
+    return (getattr(request, "remote_addr", None) or "local").strip() or "local"
+
+
+def request_uses_https() -> bool:
+    if bool(getattr(request, "is_secure", False)):
+        return True
+    if not trusted_proxy_peer(request_peer_ip()):
+        return False
+    forwarded_proto = getattr(request, "headers", {}).get("X-Forwarded-Proto", "")
+    return forwarded_proto.strip().lower() == "https"
+
+
+def tls_context_from_environment() -> tuple[str, str] | None:
+    if not TLS_CERT_FILE and not TLS_KEY_FILE:
+        return None
+    if not TLS_CERT_FILE or not TLS_KEY_FILE:
+        raise RuntimeError("PI4_NOC_TLS_CERT_FILE and PI4_NOC_TLS_KEY_FILE must be configured together")
+    cert = Path(TLS_CERT_FILE)
+    key = Path(TLS_KEY_FILE)
+    if not cert.is_file() or not key.is_file():
+        raise RuntimeError(f"configured TLS certificate/key is missing: {cert} / {key}")
+    return str(cert), str(key)
+
+
+def is_loopback_bind(host: str) -> bool:
+    if host.strip().lower() == "localhost":
+        return True
+    try:
+        return ipaddress.ip_address(host).is_loopback
+    except ValueError:
+        return False
 
 
 def authenticated() -> bool:
@@ -302,9 +417,17 @@ def run_text(argv: list[str], timeout: int = 8) -> str:
     return redact(proc.stdout.strip())
 
 
-def run_json(argv: list[str], timeout: int = 8, default=None):
+def run_json(argv: list[str], timeout: int = 8, default=None, env: dict[str, str] | None = None):
     try:
-        proc = run_cmd(argv, timeout=timeout)
+        proc = subprocess.run(
+            argv,
+            check=False,
+            text=True,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            timeout=timeout,
+            env=env,
+        )
         if proc.returncode != 0:
             return default
         return json.loads(proc.stdout or "null")
@@ -570,31 +693,67 @@ def data_drive_metadata() -> dict:
     }
 
 
-def service_show(unit: str) -> dict[str, str]:
-    proc = run_cmd(
-        [
-            "/usr/bin/systemctl",
-            "show",
-            unit,
-            "-p",
-            "ActiveState",
-            "-p",
-            "SubState",
-            "-p",
-            "NRestarts",
-            "-p",
-            "ExecMainStartTimestamp",
-            "-p",
-            "MainPID",
-        ],
-        timeout=4,
-    )
-    data: dict[str, str] = {}
-    for line in (proc.stdout or "").splitlines():
-        if "=" in line:
-            k, v = line.split("=", 1)
-            data[k] = v
-    return data
+SYSTEMD_SHOW_PROPERTIES = [
+    "Id",
+    "ActiveState",
+    "SubState",
+    "NRestarts",
+    "ExecMainStartTimestamp",
+    "MainPID",
+]
+
+
+def parse_systemd_show(output: str, units: list[str]) -> dict[str, dict[str, str]]:
+    records: list[dict[str, str]] = []
+    for block in re.split(r"\n\s*\n", (output or "").strip()):
+        data: dict[str, str] = {}
+        for line in block.splitlines():
+            if "=" in line:
+                key, value = line.split("=", 1)
+                data[key] = value
+        if data:
+            records.append(data)
+
+    by_id = {record.get("Id", ""): record for record in records if record.get("Id")}
+    if by_id:
+        return {unit: by_id.get(unit, {}) for unit in units}
+    return {
+        unit: records[index] if index < len(records) else {}
+        for index, unit in enumerate(units)
+    }
+
+
+def service_show_many(units: list[str]) -> dict[str, dict[str, str]]:
+    if not units:
+        return {}
+    argv = ["/usr/bin/systemctl", "show", *units]
+    for prop in SYSTEMD_SHOW_PROPERTIES:
+        argv.extend(["-p", prop])
+    try:
+        proc = run_cmd(argv, timeout=6)
+    except Exception:
+        return {unit: {} for unit in units}
+    # systemctl can return non-zero for one missing unit while still emitting
+    # complete records for every unit that exists.
+    return parse_systemd_show(proc.stdout or "", units)
+
+
+def partition_k3s_items(document: dict) -> dict[str, list[dict]]:
+    buckets: dict[str, list[dict]] = {
+        "Node": [],
+        "Pod": [],
+        "Event": [],
+        "Deployment": [],
+        "StatefulSet": [],
+        "DaemonSet": [],
+    }
+    for item in document.get("items", []) if isinstance(document, dict) else []:
+        if not isinstance(item, dict):
+            continue
+        kind = item.get("kind")
+        if kind in buckets:
+            buckets[kind].append(item)
+    return buckets
 
 
 def listening_ports() -> set[str]:
@@ -683,6 +842,7 @@ def top_items(rows, limit: int = 5, include_ip: bool = False) -> list[dict]:
     return items[:limit]
 
 
+@lru_cache(maxsize=1024)
 def normalize_mac(value: str | None) -> str:
     if not value:
         return ""
@@ -692,6 +852,7 @@ def normalize_mac(value: str | None) -> str:
     return raw
 
 
+@lru_cache(maxsize=1024)
 def is_ipv4(value: str | None) -> bool:
     if not value:
         return False
@@ -738,6 +899,7 @@ def interface_label(value: str | None) -> str:
     return raw or "unknown"
 
 
+@lru_cache(maxsize=1024)
 def normalize_link_type(value: str | None) -> str:
     label = interface_label(value)
     if label == "Wired":
@@ -773,6 +935,7 @@ def clean_text(value, max_len: int = 80) -> str:
     return text[:max_len]
 
 
+@lru_cache(maxsize=1024)
 def device_key(ip: str | None = "", mac: str | None = "") -> str:
     mac = normalize_mac(mac)
     if mac:
@@ -791,6 +954,7 @@ def validate_alias_key(key: str) -> bool:
     return False
 
 
+@lru_cache(maxsize=1024)
 def normalize_ap_id(value: str | None) -> str:
     raw = clean_text(value, 80).lower()
     if not raw:
@@ -810,6 +974,7 @@ def normalize_ap_id(value: str | None) -> str:
     return ""
 
 
+@lru_cache(maxsize=1024)
 def looks_like_default_ap(name: str, ip: str, mac: str) -> bool:
     low = clean_text(name, 100).lower()
     mac = normalize_mac(mac)
@@ -925,6 +1090,10 @@ def save_device_alias(payload: dict) -> dict:
 class DashboardCache:
     def __init__(self) -> None:
         self.lock = threading.RLock()
+        self.serialization_lock = threading.Lock()
+        self.snapshot_revision = 0
+        self.serialized_revision = -1
+        self.serialized_payload = ""
         self.histories = {
             "cpu": deque([0.0] * HISTORY_LEN, maxlen=HISTORY_LEN),
             "ram": deque([0.0] * HISTORY_LEN, maxlen=HISTORY_LEN),
@@ -940,14 +1109,25 @@ class DashboardCache:
             "diskWrite": deque([0.0] * HISTORY_LEN, maxlen=HISTORY_LEN),
         }
         self.prev_time = time.monotonic()
-        self.prev_net = psutil.net_io_counters()
-        self.prev_disk = psutil.disk_io_counters()
+        self.prev_net = psutil.net_io_counters(nowrap=False)
+        self.prev_disk = psutil.disk_io_counters(nowrap=False)
         self.prev_adguard = None
         self.data_drive = data_drive_metadata()
+        self.nas_size_gb = 0
+        self.host_static = {
+            "name": socket.gethostname(),
+            "ip": local_ip(),
+            "os": platform.platform(),
+            "arch": platform.machine(),
+            "kernel": platform.release(),
+        }
+        self.boot_time = psutil.boot_time()
         self.adguard_client_hints: dict[str, dict] = {}
         self.name_cache: dict[str, dict] = {}
+        self.backup_artifact_cache: dict[tuple, bool] = {}
         self.operations_last_run: dict[str, float] = {}
         self.ops_notifier = NotificationManager()
+        self.k3s_client = K3sClient()
         self.router_topology_doc: dict = {}
         self.router_collector_status: dict = self.empty_router_collector_status("not_polled", "Router collector has not polled yet")
         self.router_collector = TplinkTopologyCollector(
@@ -1003,43 +1183,83 @@ class DashboardCache:
             "WEB_APPS": self.web_apps_snapshot({}),
             "OPS_CENTER": self.empty_operations_snapshot(),
             "HOST": {},
-            "META": {"updatedAt": datetime.now().isoformat(), "source": "pi4-noc-sidecar"},
+            "META": {
+                "updatedAt": datetime.now().isoformat(),
+                "source": "pi4-noc-sidecar",
+                "state": "loading",
+                "message": "Waiting for live collectors",
+            },
         }
 
     def start(self) -> None:
         self.update_hot()
         threading.Thread(target=self._initial_refresh, daemon=True).start()
-        for interval, target in [(1, self._hot_loop), (5, self._service_loop), (20, self._heavy_loop)]:
+        loops = [
+            (HOT_REFRESH_SECONDS, self._hot_loop),
+            (SERVICE_REFRESH_SECONDS, self._service_loop),
+            (HEAVY_REFRESH_SECONDS, self._heavy_loop),
+            (ROUTER_REFRESH_SECONDS, self._router_loop),
+            (STORAGE_REFRESH_SECONDS, self._storage_loop),
+        ]
+        for interval, target in loops:
             thread = threading.Thread(target=target, args=(interval,), daemon=True)
             thread.start()
 
     def _initial_refresh(self) -> None:
-        self.update_services()
-        self.update_adguard()
-        self.update_k3s()
-        self.update_operations(force=True)
-        self.update_router_collector()
-        self.update_topology()
+        succeeded = self._run_refreshes(
+            "initial",
+            self.update_services,
+            self.update_adguard,
+            self.update_k3s,
+            lambda: self.update_operations(force=True),
+            self.update_router_collector,
+            self.update_topology,
+        )
+        with self.lock:
+            self.snapshot_data["META"] = {
+                **self.snapshot_data.get("META", {}),
+                "updatedAt": datetime.now().isoformat(),
+                "source": "pi4-noc-sidecar",
+                "state": "ready" if succeeded else "degraded",
+                "message": "Live collectors connected" if succeeded else "Some live collectors are unavailable",
+            }
+            self._touch_locked()
 
-    def _hot_loop(self, interval: int) -> None:
+    def _run_refreshes(self, label: str, *callbacks) -> bool:
+        succeeded = True
+        for callback in callbacks:
+            try:
+                callback()
+            except Exception as exc:
+                succeeded = False
+                callback_name = getattr(callback, "__name__", "refresh")
+                print(f"pi4-noc {label}/{callback_name} collector failed: {redact(str(exc))}", flush=True)
+        return succeeded
+
+    def _hot_loop(self, interval: float) -> None:
         while True:
             time.sleep(interval)
-            self.update_hot()
+            self._run_refreshes("hot", self.update_hot)
 
-    def _service_loop(self, interval: int) -> None:
+    def _service_loop(self, interval: float) -> None:
         while True:
             time.sleep(interval)
-            self.update_services()
-            self.update_operations()
-            self.update_topology()
+            self._run_refreshes("service", self.update_services, self.update_operations, self.update_topology)
 
-    def _heavy_loop(self, interval: int) -> None:
+    def _heavy_loop(self, interval: float) -> None:
         while True:
             time.sleep(interval)
-            self.update_adguard()
-            self.update_k3s()
-            self.update_router_collector()
-            self.update_topology()
+            self._run_refreshes("heavy", self.update_adguard, self.update_k3s)
+
+    def _router_loop(self, interval: float) -> None:
+        while True:
+            time.sleep(interval)
+            self._run_refreshes("router", self.update_router_collector)
+
+    def _storage_loop(self, interval: float) -> None:
+        while True:
+            self._run_refreshes("storage", self.update_storage_size)
+            time.sleep(interval)
 
     def update_hot(self) -> None:
         now = time.monotonic()
@@ -1049,8 +1269,8 @@ class DashboardCache:
         swap = psutil.swap_memory()
         load = os.getloadavg()
         temp = self.temperature_c()
-        net = psutil.net_io_counters()
-        disk = psutil.disk_io_counters()
+        net = psutil.net_io_counters(nowrap=False)
+        disk = psutil.disk_io_counters(nowrap=False)
         net_in = max(0, net.bytes_recv - self.prev_net.bytes_recv) * 8 / dt / 1024
         net_out = max(0, net.bytes_sent - self.prev_net.bytes_sent) * 8 / dt / 1024
         disk_read = max(0, disk.read_bytes - self.prev_disk.read_bytes) / dt / (1024 * 1024)
@@ -1072,12 +1292,8 @@ class DashboardCache:
             self.histories["diskRead"].append(disk_read)
             self.histories["diskWrite"].append(disk_write)
             self.snapshot_data["HOST"] = {
-                "name": socket.gethostname(),
-                "ip": local_ip(),
-                "os": platform.platform(),
-                "arch": platform.machine(),
-                "kernel": platform.release(),
-                "uptime": uptime_label(time.time() - psutil.boot_time()),
+                **self.host_static,
+                "uptime": uptime_label(time.time() - self.boot_time),
                 "loadAvg": [round(v, 2) for v in load],
                 "cpuPct": round(cpu, 1),
                 "ramPct": round(vm.percent, 1),
@@ -1089,9 +1305,21 @@ class DashboardCache:
             self.snapshot_data["HISTORY"] = {k: list(v) for k, v in self.histories.items()}
             self.snapshot_data["STORAGE"] = self.storage_snapshot(root_usage, ssd_usage)
             self.snapshot_data["KPIS"] = self.kpis()
-            self.snapshot_data["META"] = {"updatedAt": datetime.now().isoformat(), "source": "pi4-noc-sidecar"}
+            self.snapshot_data["META"] = {
+                **self.snapshot_data.get("META", {}),
+                "updatedAt": datetime.now().isoformat(),
+                "source": "pi4-noc-sidecar",
+            }
+            self._touch_locked()
 
     def temperature_c(self) -> float:
+        try:
+            raw = float(THERMAL_ZONE_TEMP.read_text(encoding="utf-8").strip())
+            direct = raw / 1000 if raw > 1000 else raw
+            if -20 < direct < 150:
+                return direct
+        except Exception:
+            pass
         try:
             temps = psutil.sensors_temperatures()
             for entries in temps.values():
@@ -1108,7 +1336,7 @@ class DashboardCache:
         root_used = round(root.used / (1024**3))
         ssd_gb = max(1, round(ssd.total / (1024**3)))
         ssd_used = round(ssd.used / (1024**3))
-        nas = self.path_size_gb("/mnt/ssd/nas")
+        nas = self.nas_size_gb
         other = max(0, ssd_used - nas)
         return {
             "root": {"used": root_used, "total": root_gb, "fs": "ext4", "mount": "/"},
@@ -1125,12 +1353,30 @@ class DashboardCache:
             },
         }
 
-    def path_size_gb(self, path: str) -> int:
+    def path_size_gb(self, path: str) -> int | None:
         if not Path(path).exists():
-            return 0
-        out = run_text(["/usr/bin/du", "-sBG", path], timeout=10)
-        m = re.match(r"([0-9]+)G", out)
-        return int(m.group(1)) if m else 0
+            return None
+        try:
+            proc = run_cmd(["/usr/bin/du", "-sBG", path], timeout=30)
+        except Exception:
+            return None
+        if proc.returncode != 0:
+            return None
+        match = re.match(r"([0-9]+)G(?:\s|$)", (proc.stdout or "").strip())
+        return int(match.group(1)) if match else None
+
+    def update_storage_size(self) -> bool:
+        nas_size = self.path_size_gb("/mnt/ssd/nas")
+        if nas_size is None:
+            return False
+        root_usage = psutil.disk_usage("/")
+        ssd_usage = psutil.disk_usage("/mnt/ssd") if Path("/mnt/ssd").exists() else root_usage
+        with self.lock:
+            self.nas_size_gb = nas_size
+            self.snapshot_data["STORAGE"] = self.storage_snapshot(root_usage, ssd_usage)
+            self.snapshot_data["KPIS"] = self.kpis()
+            self._touch_locked()
+        return True
 
     def kpis(self) -> list[dict]:
         host = self.snapshot_data.get("HOST", {})
@@ -1169,15 +1415,19 @@ class DashboardCache:
 
     def update_services(self) -> None:
         listening = listening_ports()
-        all_ports = {str(p) for cfg in UNIT_CONFIG for p in cfg["ports"]} | {str(cfg["port"]) for cfg in WEB_APP_CONFIG}
+        current_units = [cfg for cfg in UNIT_CONFIG if cfg.get("current", True)]
+        local_web_ports = {str(cfg["port"]) for cfg in WEB_APP_CONFIG if not cfg.get("remote")}
+        all_ports = {str(p) for cfg in current_units for p in cfg["ports"]} | local_web_ports
         reachable = probe_ports(all_ports, listening)
+        systemd_units = [cfg["unit"] for cfg in current_units if cfg.get("kind") != "k3s"]
+        systemd_rows = service_show_many(systemd_units)
         services = []
-        for cfg in UNIT_CONFIG:
+        for cfg in current_units:
             port_ok = all(reachable.get(str(p)) for p in cfg["ports"]) if cfg["ports"] else None
             if cfg.get("kind") == "k3s":
                 svc = self.k3s_service_row(cfg, port_ok)
             else:
-                show = service_show(cfg["unit"])
+                show = systemd_rows.get(cfg["unit"], {})
                 active = show.get("ActiveState", "unknown")
                 ok = active == "active" and (port_ok if port_ok is not None else active in {"active", "activating"})
                 svc = {
@@ -1202,6 +1452,7 @@ class DashboardCache:
             self.snapshot_data["WEB_APPS"] = web_apps
             self.snapshot_data["KPIS"] = self.kpis()
             self.snapshot_data["LOGS"] = self.recent_log_cards()
+            self._touch_locked()
 
     def k3s_service_row(self, cfg: dict, port_ok: bool | None) -> dict:
         with self.lock:
@@ -1244,6 +1495,9 @@ class DashboardCache:
     def web_apps_snapshot(self, reachable: dict[str, bool]) -> list[dict]:
         apps = []
         for cfg in WEB_APP_CONFIG:
+            if cfg.get("remote"):
+                apps.append({**cfg, "status": "unknown", "statusLabel": "not probed"})
+                continue
             ok = bool(reachable.get(str(cfg["port"])))
             apps.append(
                 {
@@ -1315,6 +1569,7 @@ class DashboardCache:
                 "cadences": cadences,
                 "events": events,
             }
+            self._touch_locked()
             ops_snapshot = copy.deepcopy(self.snapshot_data["OPS_CENTER"])
         self.dispatch_operation_notifications(ops_snapshot, due_configs, force=force, now=now)
 
@@ -1363,6 +1618,8 @@ class DashboardCache:
                 return self.ssh_k3s_operation_check(check, started)
             if kind == "ssh-systemd-failed":
                 return self.ssh_systemd_failed_operation_check(check, started)
+            if kind == "ssh-http":
+                return self.ssh_http_operation_check(check, started)
             if kind == "ssh-systemd-unit":
                 return self.ssh_systemd_unit_operation_check(check, started)
             if kind == "ssh-systemd-timer":
@@ -1387,10 +1644,6 @@ class DashboardCache:
                 return self.systemd_service_result_operation_check(check, started)
             if kind == "backup-recent":
                 return self.backup_operation_check(check, started)
-            if kind == "remote-backup-recent":
-                return self.remote_backup_operation_check(check, started)
-            if kind == "remote-backup-parity":
-                return self.remote_backup_parity_operation_check(check, started)
             if kind == "backup-artifacts":
                 return self.backup_artifacts_operation_check(check, started)
             if kind == "directory-retention":
@@ -1416,30 +1669,69 @@ class DashboardCache:
             return operation_check_result(check, check.get("failureStatus", "fail"), str(exc), started)
 
     def http_operation_check(self, check: dict, started: float) -> dict:
-        req = urlrequest.Request(check["url"], headers={"User-Agent": "pi4-noc-ops/1.0"})
         status = check.get("failureStatus", "fail")
-        with urlrequest.urlopen(req, timeout=float(check.get("timeout", 2.5))) as resp:
-            body = resp.read(int(check.get("maxBodyBytes", 262144))).decode("utf-8", "replace")
-            code = getattr(resp, "status", resp.getcode())
-            ok_codes = check.get("okStatuses") or list(range(200, 400))
-            ok = int(code) in ok_codes
-            data = {}
-            if body.strip().startswith(("{", "[")) or check.get("expectJson") or check.get("jsonField"):
-                try:
-                    data = json.loads(body or "{}")
-                except Exception:
-                    data = {}
-                    ok = False
-            message = f"HTTP {code}"
-            if check.get("jsonField"):
-                actual = nested_get(data, check["jsonField"])
-                expected = check.get("jsonEquals", True)
-                ok = ok and actual == expected
-                message = f"{check['jsonField']}={actual!r}"
-            warn_field = check.get("warnJsonField")
-            if ok and warn_field and nested_get(data, warn_field):
-                return operation_check_result(check, "warn", f"{warn_field}=true", started, httpStatus=code)
-            return operation_check_result(check, "ok" if ok else status, message, started, httpStatus=code)
+        attempts = max(1, min(3, int(check.get("attempts", 1))))
+        retry_delay = max(0.0, min(2.0, float(check.get("retryDelay", 0.2))))
+        last_message = "request failed"
+        last_code = None
+
+        for attempt in range(1, attempts + 1):
+            try:
+                req = urlrequest.Request(check["url"], headers={"User-Agent": "pi4-noc-ops/1.0"})
+                with open_ops_url(req, timeout=float(check.get("timeout", 2.5))) as resp:
+                    body = resp.read(int(check.get("maxBodyBytes", 262144))).decode("utf-8", "replace")
+                    code = getattr(resp, "status", resp.getcode())
+                last_code = code
+                ok_codes = check.get("okStatuses") or list(range(200, 400))
+                ok = int(code) in ok_codes
+                data = {}
+                if body.strip().startswith(("{", "[")) or check.get("expectJson") or check.get("jsonField"):
+                    try:
+                        data = json.loads(body or "{}")
+                    except Exception:
+                        data = {}
+                        ok = False
+                last_message = f"HTTP {code}"
+                if check.get("jsonField"):
+                    actual = nested_get(data, check["jsonField"])
+                    expected = check.get("jsonEquals", True)
+                    ok = ok and actual == expected
+                    last_message = f"{check['jsonField']}={actual!r}"
+                warn_field = check.get("warnJsonField")
+                if ok and warn_field and nested_get(data, warn_field):
+                    return operation_check_result(
+                        check,
+                        "warn",
+                        f"{warn_field}=true",
+                        started,
+                        httpStatus=code,
+                        attempts=attempt,
+                    )
+                if ok:
+                    return operation_check_result(check, "ok", last_message, started, httpStatus=code, attempts=attempt)
+            except urlerror.HTTPError as exc:
+                last_code = int(exc.code)
+                ok_codes = check.get("okStatuses") or list(range(200, 400))
+                if last_code in ok_codes:
+                    return operation_check_result(
+                        check,
+                        "ok",
+                        f"HTTP {last_code}",
+                        started,
+                        httpStatus=last_code,
+                        attempts=attempt,
+                    )
+                last_message = f"HTTP {last_code}"
+            except Exception as exc:
+                last_message = str(exc) or type(exc).__name__
+
+            if attempt < attempts:
+                time.sleep(retry_delay)
+
+        extra = {"attempts": attempts}
+        if last_code is not None:
+            extra["httpStatus"] = last_code
+        return operation_check_result(check, status, last_message, started, **extra)
 
     def multi_http_operation_check(self, check: dict, started: float) -> dict:
         latencies = []
@@ -1448,7 +1740,7 @@ class DashboardCache:
             probe_started = time.monotonic()
             try:
                 req = urlrequest.Request(url, headers={"User-Agent": "pi4-noc-ops/1.0"})
-                with urlrequest.urlopen(req, timeout=float(check.get("timeout", 4))) as resp:
+                with open_ops_url(req, timeout=float(check.get("timeout", 4))) as resp:
                     resp.read(int(check.get("maxBodyBytes", 2048)))
                     code = getattr(resp, "status", resp.getcode())
                 if int(code) < 200 or int(code) >= 400:
@@ -1737,6 +2029,68 @@ class DashboardCache:
             ],
             timeout=timeout if timeout is not None else float(check.get("timeout", 5)),
         )
+
+    def ssh_http_operation_check(self, check: dict, started: float) -> dict:
+        attempts = max(1, min(3, int(check.get("attempts", 1))))
+        request_timeout = max(1.0, min(10.0, float(check.get("requestTimeout", 2))))
+        retry_delay = max(0.0, min(2.0, float(check.get("retryDelay", 0.2))))
+        health_url = str(check["healthUrl"])
+        command = (
+            f"/usr/bin/curl --fail --silent --show-error --max-time {request_timeout:g} "
+            f"-- {shlex.quote(health_url)}"
+        )
+        confirmed_failures = 0
+        transport_failures = 0
+        last_message = "remote HTTP health check failed"
+
+        for attempt in range(1, attempts + 1):
+            try:
+                proc = self.ssh_run(check, command, timeout=float(check.get("attemptTimeout", 2)))
+            except subprocess.TimeoutExpired:
+                transport_failures += 1
+                last_message = "SSH probe timed out"
+            else:
+                if proc.returncode == 255:
+                    transport_failures += 1
+                    last_message = proc_output(proc) or "SSH probe unavailable"
+                elif proc.returncode != 0:
+                    confirmed_failures += 1
+                    last_message = proc_output(proc) or "remote HTTP health check failed"
+                else:
+                    body = (proc.stdout or "").strip()
+                    ok = True
+                    data = {}
+                    if body.startswith(("{", "[")) or check.get("expectJson") or check.get("jsonField"):
+                        try:
+                            data = json.loads(body or "{}")
+                        except Exception:
+                            ok = False
+                    message = "HTTP 200"
+                    if check.get("jsonField"):
+                        actual = nested_get(data, check["jsonField"])
+                        expected = check.get("jsonEquals", True)
+                        ok = ok and actual == expected
+                        message = f"{check['jsonField']}={actual!r}"
+                    if ok:
+                        warn_field = check.get("warnJsonField")
+                        if warn_field and nested_get(data, warn_field):
+                            return operation_check_result(check, "warn", f"{warn_field}=true", started, attempts=attempt)
+                        return operation_check_result(check, "ok", message, started, attempts=attempt)
+                    confirmed_failures += 1
+                    last_message = message
+
+            if attempt < attempts:
+                time.sleep(retry_delay)
+
+        if confirmed_failures == attempts:
+            status = check.get("failureStatus", "fail")
+        else:
+            status = check.get("probeUnavailableStatus", "warn")
+            if transport_failures:
+                last_message = f"probe unavailable after {attempts} attempts: {last_message}"
+            else:
+                last_message = f"probe inconclusive after {attempts} attempts: {last_message}"
+        return operation_check_result(check, status, last_message, started, attempts=attempts)
 
     def ssh_systemd_failed_operation_check(self, check: dict, started: float) -> dict:
         proc = self.ssh_run(check, "systemctl --failed --no-legend --plain || true", timeout=float(check.get("timeout", 5)))
@@ -2221,114 +2575,6 @@ printf 'throttle=%s\\n' "$throttle"
             extra = {"fileCount": file_count, "bytes": total_bytes}
         return operation_check_result(check, "ok" if ok else check.get("failureStatus", "warn"), message, started, **extra)
 
-    def remote_backup_operation_check(self, check: dict, started: float) -> dict:
-        path = str(check["path"])
-        pattern = str(check.get("pattern", "*.tgz"))
-        command = (
-            f"find {shlex.quote(path)} -maxdepth 1 -type f -name {shlex.quote(pattern)} "
-            "-printf '%T@ %s %f\\n' 2>/dev/null | sort -nr | head -1"
-        )
-        proc = run_cmd(
-            [
-                "/usr/bin/ssh",
-                "-o",
-                "BatchMode=yes",
-                "-o",
-                f"ConnectTimeout={int(check.get('connectTimeout', 4))}",
-                check["sshTarget"],
-                f"bash -lc {shlex.quote(command)}",
-            ],
-            timeout=float(check.get("timeout", 8)),
-        )
-        if proc.returncode != 0:
-            return operation_check_result(check, check.get("failureStatus", "warn"), proc_output(proc) or "remote backup check failed", started)
-        line = ""
-        for candidate in (proc.stdout or "").strip().splitlines():
-            if re.match(r"^\d+(?:\.\d+)?\s+\d+\s+", candidate.strip()):
-                line = candidate.strip()
-                break
-        if not line:
-            return operation_check_result(check, check.get("failureStatus", "warn"), "no remote backups found", started)
-        parts = line.split(maxsplit=2)
-        if len(parts) < 3:
-            return operation_check_result(check, check.get("failureStatus", "warn"), "remote backup output unreadable", started)
-        newest = float(parts[0])
-        size = int(float(parts[1]))
-        name = parts[2]
-        age_hours = (time.time() - newest) / 3600
-        max_age = float(check.get("maxAgeHours", 72))
-        ok = age_hours <= max_age and size > 0
-        message = f"{name}, {age_hours:.1f}h old, {size / 1024:.0f} KB"
-        return operation_check_result(check, "ok" if ok else check.get("failureStatus", "warn"), message, started, ageHours=round(age_hours, 1), bytes=size)
-
-    def remote_backup_parity_operation_check(self, check: dict, started: float) -> dict:
-        local_path = Path(check["localPath"])
-        remote_path = str(check["remotePath"])
-        pattern = str(check.get("pattern", "pi4-backup-*.tgz*"))
-        if not local_path.is_dir():
-            return operation_check_result(check, check.get("failureStatus", "warn"), "local backup path is missing", started)
-
-        max_files = int(check.get("maxFiles", 128))
-        local_items = sorted(
-            (item for item in local_path.glob(pattern) if item.is_file()),
-            key=lambda item: item.stat().st_mtime,
-            reverse=True,
-        )[:max_files]
-        local = {item.name: item.stat().st_size for item in local_items}
-        if not local:
-            return operation_check_result(check, check.get("failureStatus", "warn"), "no local backup artifacts found", started)
-
-        command = (
-            f"find {shlex.quote(remote_path)} -maxdepth 1 -type f -name {shlex.quote(pattern)} "
-            f"-printf '%f\\t%s\\n' 2>/dev/null | sort | head -n {max_files}"
-        )
-        proc = self.ssh_run(check, command, timeout=float(check.get("timeout", 8)))
-        if proc.returncode != 0:
-            return operation_check_result(check, check.get("failureStatus", "warn"), proc_output(proc) or "remote parity check failed", started)
-
-        remote = {}
-        for line in (proc.stdout or "").splitlines():
-            try:
-                name, size_text = line.rsplit("\t", 1)
-                remote[name] = int(size_text)
-            except (ValueError, TypeError):
-                continue
-
-        missing_remote = sorted(set(local) - set(remote))
-        size_mismatches = sorted(name for name in set(local) & set(remote) if local[name] != remote[name])
-        local_archives = {name for name in local if name.endswith(".tgz")}
-        local_checksums = {name for name in local if name.endswith(".tgz.sha256")}
-        unpaired_local = sorted(
-            {name for name in local_archives if f"{name}.sha256" not in local}
-            | {name for name in local_checksums if name.removesuffix(".sha256") not in local}
-        )
-        ok = bool(local_archives) and not missing_remote and not size_mismatches and not unpaired_local
-        if ok:
-            message = f"{len(local_archives)} local backup sets mirrored to Pi5"
-        else:
-            parts = []
-            if missing_remote:
-                parts.append(f"{len(missing_remote)} remote artifacts missing")
-            if size_mismatches:
-                parts.append(f"{len(size_mismatches)} size mismatches")
-            if unpaired_local:
-                parts.append(f"{len(unpaired_local)} unpaired local artifacts")
-            if not local_archives:
-                parts.append("no local archives")
-            message = ", ".join(parts)
-        return operation_check_result(
-            check,
-            "ok" if ok else check.get("failureStatus", "warn"),
-            message,
-            started,
-            localArtifactCount=len(local),
-            remoteArtifactCount=len(remote),
-            backupSetCount=len(local_archives),
-            missingRemote=missing_remote[:12],
-            sizeMismatches=size_mismatches[:12],
-            unpairedLocal=unpaired_local[:12],
-        )
-
     def backup_artifacts_operation_check(self, check: dict, started: float) -> dict:
         root = Path(check["path"])
         if not root.exists():
@@ -2339,11 +2585,22 @@ printf 'throttle=%s\\n' "$throttle"
         verified_checksums = 0
         checksum_failures = 0
         skipped_checksums = 0
+        check_id = check["id"]
+        active_cache_keys = set()
         for archive in archives:
             try:
-                with tarfile.open(archive, "r:*") as tf:
-                    if not tf.getmembers():
-                        archive_failures += 1
+                stat = archive.stat()
+                cache_key = (check_id, "archive", str(archive), stat.st_size, stat.st_mtime_ns)
+                active_cache_keys.add(cache_key)
+                with self.lock:
+                    cached = self.backup_artifact_cache.get(cache_key)
+                if cached is None:
+                    with tarfile.open(archive, "r:*") as tf:
+                        cached = bool(tf.getmembers())
+                    with self.lock:
+                        self.backup_artifact_cache[cache_key] = cached
+                if not cached:
+                    archive_failures += 1
             except Exception:
                 archive_failures += 1
         for checksum in checksums:
@@ -2363,13 +2620,38 @@ printf 'throttle=%s\\n' "$throttle"
                 if not target_resolved.exists():
                     checksum_failures += 1
                     continue
-                digest = hashlib.sha256(target_resolved.read_bytes()).hexdigest()
-                if digest.lower() == expected.lower():
+                checksum_stat = checksum.stat()
+                target_stat = target_resolved.stat()
+                cache_key = (
+                    check_id,
+                    "checksum",
+                    str(checksum),
+                    checksum_stat.st_size,
+                    checksum_stat.st_mtime_ns,
+                    str(target_resolved),
+                    target_stat.st_size,
+                    target_stat.st_mtime_ns,
+                )
+                active_cache_keys.add(cache_key)
+                with self.lock:
+                    verified = self.backup_artifact_cache.get(cache_key)
+                if verified is None:
+                    digest = hashlib.sha256(target_resolved.read_bytes()).hexdigest()
+                    verified = digest.lower() == expected.lower()
+                    with self.lock:
+                        self.backup_artifact_cache[cache_key] = verified
+                if verified:
                     verified_checksums += 1
                 else:
                     checksum_failures += 1
             except Exception:
                 checksum_failures += 1
+        with self.lock:
+            self.backup_artifact_cache = {
+                key: value
+                for key, value in self.backup_artifact_cache.items()
+                if key[0] != check_id or key in active_cache_keys
+            }
         ok = archive_failures == 0 and checksum_failures == 0 and (archives or verified_checksums)
         message = f"{len(archives)} archives readable, {verified_checksums} checksums verified"
         if skipped_checksums:
@@ -2494,7 +2776,7 @@ printf 'throttle=%s\\n' "$throttle"
 
     def grid_sync_operation_check(self, check: dict, started: float) -> dict:
         req = urlrequest.Request(check["url"], headers={"User-Agent": "pi4-noc-ops/1.0"})
-        with urlrequest.urlopen(req, timeout=float(check.get("timeout", 3))) as resp:
+        with open_ops_url(req, timeout=float(check.get("timeout", 3))) as resp:
             data = json.loads(resp.read(int(check.get("maxBodyBytes", 262144))).decode("utf-8", "replace") or "{}")
         notes = int(data.get("notes") or 0)
         min_notes = int(check.get("minNotes", 1))
@@ -2542,7 +2824,7 @@ printf 'throttle=%s\\n' "$throttle"
 
     def speed_operation_check(self, check: dict, started: float) -> dict:
         req = urlrequest.Request(check["url"], headers={"User-Agent": "pi4-noc-speed/1.0"})
-        with urlrequest.urlopen(req, timeout=float(check.get("timeout", 4))) as resp:
+        with open_ops_url(req, timeout=float(check.get("timeout", 4))) as resp:
             body = resp.read(int(check.get("maxBytes", 1000000)))
         elapsed = max(time.monotonic() - started, 0.001)
         mbps = (len(body) * 8) / elapsed / 1_000_000
@@ -2560,7 +2842,7 @@ printf 'throttle=%s\\n' "$throttle"
                 "User-Agent": "pi4-noc-ops/1.0",
             },
         )
-        with urlrequest.urlopen(req, timeout=float(check.get("timeout", 5))) as resp:
+        with open_ops_url(req, timeout=float(check.get("timeout", 5))) as resp:
             data = json.loads(resp.read(int(check.get("maxBodyBytes", 65536))).decode("utf-8", "replace") or "{}")
         tag = data.get("tag_name") or data.get("name") or "unknown"
         return operation_check_result(check, "ok", f"latest {tag}", started, href=f"https://github.com/{repo}/releases/latest", release=tag)
@@ -2597,6 +2879,7 @@ printf 'throttle=%s\\n' "$throttle"
         topology = self.collect_topology()
         with self.lock:
             self.snapshot_data["TOPOLOGY"] = topology
+            self._touch_locked()
 
     def collect_topology(self) -> dict:
         with self.lock:
@@ -2773,16 +3056,22 @@ printf 'throttle=%s\\n' "$throttle"
         for neighbor in self.collect_neighbors():
             upsert(neighbor, "arp")
 
-        resolved = 0
+        resolution_attempts = 0
         for row in list(clients.values()):
-            if resolved >= 2:
-                break
             if row.get("sourceName"):
                 continue
-            hint = self.resolve_client_name(row.get("ip", ""), row.get("mac", ""))
+            ip = row.get("ip", "")
+            mac = row.get("mac", "")
+            if not is_ipv4(ip):
+                continue
+            hint = self.cached_client_name(ip, mac)
+            if hint is None:
+                if resolution_attempts >= 2:
+                    continue
+                resolution_attempts += 1
+                hint = self.resolve_client_name(ip, mac)
             if hint.get("name"):
                 upsert({"ip": row.get("ip"), "mac": row.get("mac"), "name": hint["name"], "online": row.get("online")}, "resolved")
-                resolved += 1
 
         ap_rows = []
         client_rows = []
@@ -2939,13 +3228,22 @@ printf 'throttle=%s\\n' "$throttle"
         except Exception:
             return {}
 
-    def resolve_client_name(self, ip: str, mac: str = "") -> dict:
+    def cached_client_name(self, ip: str, mac: str = "") -> dict | None:
         if not is_ipv4(ip):
-            return {}
+            return None
         cache_key = device_key(ip, mac) or f"ip:{ip}"
         cached = self.name_cache.get(cache_key)
         if cached and time.time() - cached.get("at", 0) < 3600:
             return cached.get("value", {})
+        return None
+
+    def resolve_client_name(self, ip: str, mac: str = "") -> dict:
+        if not is_ipv4(ip):
+            return {}
+        cache_key = device_key(ip, mac) or f"ip:{ip}"
+        cached = self.cached_client_name(ip, mac)
+        if cached is not None:
+            return cached
 
         def remember(value: dict) -> dict:
             self.name_cache[cache_key] = {"at": time.time(), "value": value}
@@ -3121,16 +3419,32 @@ printf 'throttle=%s\\n' "$throttle"
             self.adguard_client_hints = client_hints
             self.snapshot_data["ADGUARD"] = adguard
             self.snapshot_data["KPIS"] = self.kpis()
+            self._touch_locked()
 
-    def update_k3s(self) -> None:
-        nodes_json = run_json(["/usr/local/bin/kubectl", "get", "nodes", "-o", "json"], timeout=12, default={"items": []}) or {"items": []}
-        pods_json = run_json(["/usr/local/bin/kubectl", "get", "pods", "-A", "-o", "json"], timeout=12, default={"items": []}) or {"items": []}
-        events_json = run_json(["/usr/local/bin/kubectl", "get", "events", "-A", "--sort-by=.lastTimestamp", "-o", "json"], timeout=12, default={"items": []}) or {"items": []}
-        workloads_json = run_json(["/usr/local/bin/kubectl", "get", "deploy,statefulset,daemonset", "-A", "-o", "json"], timeout=12, default={"items": []}) or {"items": []}
+    def update_k3s(self) -> bool:
+        try:
+            document = self.k3s_client.get_inventory()
+        except K3sClientError:
+            document = run_json(
+                [
+                    "/usr/local/bin/kubectl",
+                    "get",
+                    "nodes,pods,events,deployments,statefulsets,daemonsets",
+                    "-A",
+                    "-o",
+                    "json",
+                ],
+                timeout=20,
+                default=None,
+                env={**os.environ, "K3S_CONFIG_FILE": "/dev/null", "KUBECONFIG": "/etc/rancher/k3s/k3s.yaml"},
+            )
+        if not isinstance(document, dict) or not isinstance(document.get("items"), list):
+            return False
+        items_by_kind = partition_k3s_items(document)
 
         nodes = []
         version = "unknown"
-        for item in nodes_json.get("items", []):
+        for item in items_by_kind["Node"]:
             info = item.get("status", {}).get("nodeInfo", {})
             version = info.get("kubeletVersion", version)
             ready = any(c.get("type") == "Ready" and c.get("status") == "True" for c in item.get("status", {}).get("conditions", []))
@@ -3147,7 +3461,7 @@ printf 'throttle=%s\\n' "$throttle"
             )
 
         ns_counts: dict[str, Counter] = {}
-        for item in pods_json.get("items", []):
+        for item in items_by_kind["Pod"]:
             ns = item.get("metadata", {}).get("namespace", "default")
             phase = str(item.get("status", {}).get("phase", "Unknown")).lower()
             ns_counts.setdefault(ns, Counter())[phase] += 1
@@ -3156,8 +3470,15 @@ printf 'throttle=%s\\n' "$throttle"
             for ns, counts in sorted(ns_counts.items())
         ]
 
+        event_items = sorted(
+            items_by_kind["Event"],
+            key=lambda item: item.get("lastTimestamp")
+            or item.get("eventTime")
+            or item.get("metadata", {}).get("creationTimestamp")
+            or "",
+        )
         events = []
-        for item in events_json.get("items", [])[-8:][::-1]:
+        for item in event_items[-8:][::-1]:
             last = item.get("lastTimestamp") or item.get("eventTime") or item.get("metadata", {}).get("creationTimestamp")
             involved = item.get("involvedObject", {})
             events.append(
@@ -3171,20 +3492,28 @@ printf 'throttle=%s\\n' "$throttle"
             )
 
         workloads = []
-        for item in workloads_json.get("items", []):
-            meta = item.get("metadata", {})
-            ns = meta.get("namespace", "default")
-            kind = item.get("kind", "Workload").lower()
-            workloads.append(
-                {
-                    "namespace": ns,
-                    "kind": kind,
-                    "name": meta.get("name", "unknown"),
-                    "ready": item.get("status", {}).get("readyReplicas", 0),
-                    "desired": item.get("status", {}).get("replicas", item.get("spec", {}).get("replicas", 1)),
-                    "rolloutAllowed": ns not in PROTECTED_NAMESPACES and kind in {"deployment", "statefulset", "daemonset"},
-                }
-            )
+        for kind_name in ("Deployment", "StatefulSet", "DaemonSet"):
+            for item in items_by_kind[kind_name]:
+                meta = item.get("metadata", {})
+                ns = meta.get("namespace", "default")
+                kind = kind_name.lower()
+                status = item.get("status", {})
+                if kind_name == "DaemonSet":
+                    ready = status.get("numberReady", 0)
+                    desired = status.get("desiredNumberScheduled", 0)
+                else:
+                    ready = status.get("readyReplicas", 0)
+                    desired = status.get("replicas", item.get("spec", {}).get("replicas", 1))
+                workloads.append(
+                    {
+                        "namespace": ns,
+                        "kind": kind,
+                        "name": meta.get("name", "unknown"),
+                        "ready": ready,
+                        "desired": desired,
+                        "rolloutAllowed": ns not in PROTECTED_NAMESPACES and kind in {"deployment", "statefulset", "daemonset"},
+                    }
+                )
 
         with self.lock:
             self.snapshot_data["K3S"] = {
@@ -3194,6 +3523,8 @@ printf 'throttle=%s\\n' "$throttle"
                 "events": events,
                 "workloads": workloads,
             }
+            self._touch_locked()
+        return True
 
     def time_label(self, timestamp: str | None) -> str:
         if not timestamp:
@@ -3216,6 +3547,33 @@ printf 'throttle=%s\\n' "$throttle"
     def snapshot(self) -> dict:
         with self.lock:
             return copy.deepcopy(self.snapshot_data)
+
+    def _touch_locked(self) -> None:
+        self.snapshot_revision += 1
+
+    def serialized_snapshot(self) -> tuple[int, str]:
+        with self.lock:
+            if self.serialized_revision == self.snapshot_revision:
+                return self.serialized_revision, self.serialized_payload
+
+        with self.serialization_lock:
+            while True:
+                with self.lock:
+                    if self.serialized_revision == self.snapshot_revision:
+                        return self.serialized_revision, self.serialized_payload
+                    revision = self.snapshot_revision
+                    # Collectors publish complete top-level sections while
+                    # holding this lock.  Copying that map freezes the section
+                    # references for this revision without recursively copying
+                    # the entire payload on every SSE tick.
+                    snapshot = self.snapshot_data.copy()
+
+                payload = json.dumps(snapshot, separators=(",", ":"))
+                with self.lock:
+                    if self.snapshot_revision == revision:
+                        self.serialized_revision = revision
+                        self.serialized_payload = payload
+                        return revision, payload
 
     def known_workload(self, namespace: str, kind: str, name: str) -> bool:
         with self.lock:
@@ -3347,7 +3705,7 @@ app.config.update(
     SECRET_KEY=load_session_secret(),
     SESSION_COOKIE_HTTPONLY=True,
     SESSION_COOKIE_SAMESITE="Lax",
-    SESSION_COOKIE_SECURE=os.environ.get("PI4_NOC_SESSION_SECURE", "0").lower() in {"1", "true", "yes"},
+    SESSION_COOKIE_SECURE=os.environ.get("PI4_NOC_SESSION_SECURE", "1").lower() in {"1", "true", "yes"},
 )
 
 
@@ -3388,6 +3746,8 @@ def api_session():
 
 @app.post("/api/login")
 def api_login():
+    if not request_uses_https():
+        return jsonify({"authenticated": False, "error": "HTTPS is required for password login"}), 400
     payload = request.get_json(force=True, silent=True) or {}
     password = str(payload.get("password") or "")
     key = login_client_key()
@@ -3417,11 +3777,11 @@ def api_snapshot():
 @app.get("/api/events")
 def api_events():
     def stream():
-        last_sent = None
+        last_revision = None
         while True:
-            payload = json.dumps(cache.snapshot(), separators=(",", ":"))
-            if payload != last_sent:
-                last_sent = payload
+            revision, payload = cache.serialized_snapshot()
+            if revision != last_revision:
+                last_revision = revision
                 yield f"data: {payload}\n\n"
             else:
                 yield ": keepalive\n\n"
@@ -3531,16 +3891,22 @@ def static_or_index(path: str):
 
 def parse_args():
     parser = argparse.ArgumentParser(description="Cabrera Network dashboard sidecar")
-    parser.add_argument("--host", default=os.environ.get("PI4_NOC_HOST", "0.0.0.0"))
-    parser.add_argument("--port", default=int(os.environ.get("PI4_NOC_PORT", "80")), type=int)
+    parser.add_argument("--host", default=os.environ.get("PI4_NOC_HOST", "127.0.0.1"))
+    parser.add_argument("--port", default=int(os.environ.get("PI4_NOC_PORT", "8080")), type=int)
     parser.add_argument("--debug", action="store_true")
     return parser.parse_args()
 
 
 def main() -> None:
     args = parse_args()
+    ssl_context = tls_context_from_environment()
+    if not is_loopback_bind(args.host) and ssl_context is None:
+        raise RuntimeError(
+            "refusing to expose the dashboard without TLS; bind to loopback behind a trusted HTTPS proxy "
+            "or configure PI4_NOC_TLS_CERT_FILE and PI4_NOC_TLS_KEY_FILE"
+        )
     cache.start()
-    app.run(host=args.host, port=args.port, debug=args.debug, threaded=True, use_reloader=False)
+    app.run(host=args.host, port=args.port, debug=args.debug, threaded=True, use_reloader=False, ssl_context=ssl_context)
 
 
 if __name__ == "__main__":

@@ -1,0 +1,7 @@
+[Unit]
+Description=Temporary Raspberry Pi 5 desktop and VNC maintenance session
+Requires=multi-user.target
+Wants=lightdm.service wayvnc-control.service wayvnc.service
+After=multi-user.target lightdm.service wayvnc-control.service wayvnc.service
+AllowIsolate=yes
+

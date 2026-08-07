@@ -1,0 +1,11 @@
+--- pi5_alerts.py
++++ pi5_alerts.py
+@@ -143,7 +143,6 @@
+     ("Deployment", "kube-system", "coredns"),
+     ("Deployment", "kube-system", "local-path-provisioner"),
+     ("Deployment", "kube-system", "metrics-server"),
+-    ("Deployment", "kube-system", "traefik"),
+ }
+ 
+ RESOURCE_GUARDRAIL_DEPLOYMENTS = {
+

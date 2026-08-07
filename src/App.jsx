@@ -5,7 +5,6 @@
 import React, { useState, useEffect, useRef, useCallback, useMemo } from "react";
 import { Icon } from "./icons.jsx";
 import { Sparkline, TimeSeries, Donut, HBar, StackedBar, PodsBar } from "./charts.jsx";
-import { DEFAULT_DASHBOARD } from "./mockData.jsx";
 import {
   fetchLogs,
   getActionJob,
@@ -17,7 +16,7 @@ import {
   useDashboardFeed,
 } from "./api.js";
 
-let MOCK = DEFAULT_DASHBOARD;
+let MOCK = null;
 
 // ------------------------------------------------------------- helpers
 const useNow = () => {
@@ -109,7 +108,8 @@ function useToasts() {
 
 const LoginScreen = ({ loading, error, onSubmit }) => {
   const [password, setPassword] = useState("");
-  const disabled = loading || password.length === 0;
+  const secureOrigin = typeof window === "undefined" || window.location.protocol === "https:";
+  const disabled = loading || password.length === 0 || !secureOrigin;
   return (
     <main className="login-shell">
       <form
@@ -133,6 +133,7 @@ const LoginScreen = ({ loading, error, onSubmit }) => {
           placeholder="Pi4 login password"
           autoComplete="current-password"
         />
+        {!secureOrigin && <div className="login-error">HTTPS is required before entering the Pi4 password. Open the configured TLS/proxy URL.</div>}
         {error && <div className="login-error">{error}</div>}
         <button className="btn login-submit" type="submit" disabled={disabled}>
           <Icon name="check" />
@@ -166,7 +167,13 @@ const AuthGate = ({ children }) => {
       const session = await login(password);
       setState({ loading: false, authenticated: Boolean(session.authenticated), error: "" });
     } catch (err) {
-      setState({ loading: false, authenticated: false, error: "Password did not unlock the dashboard." });
+      setState({
+        loading: false,
+        authenticated: false,
+        error: err?.message?.includes("HTTPS")
+          ? err.message
+          : "Password did not unlock the dashboard.",
+      });
     }
   };
 
@@ -211,7 +218,6 @@ const IconLegend = ({ open, onClose }) => {
     { name: "brandFolderNet", label: "Samba / NAS share" },
     { name: "brandTerminal",  label: "SSH" },
     { name: "brandSocket",    label: "Socket / API listener" },
-    { name: "brandHeartbeat", label: "Uptime Kuma" },
   ];
   return (
     <div className="icon-legend" style={{
@@ -1514,7 +1520,6 @@ const KBD_HINTS = {
   "adguard.open":    "⌘O",
   "k3s.restart":     "⌘⇧K",
   "k3s.events":      "⌘E",
-  "kuma.open":       "⌘U",
   "ssh.logs":        "⌘L",
   "smbd.restart":    "⌘⇧S",
   "refresh":         "R",
@@ -2548,7 +2553,45 @@ const MobileDashboard = ({
 // ------------------------------------------------------------- App
 function DashboardApp({ onLogout }) {
   const feed = useDashboardFeed();
-  MOCK = feed.data || DEFAULT_DASHBOARD;
+  const snapshotState = feed.data?.META?.state;
+  const hasLiveSnapshot = snapshotState === "ready"
+    || snapshotState === "degraded"
+    || (snapshotState === undefined && Boolean(feed.data?.HOST?.name && Array.isArray(feed.data?.SERVICES)));
+
+  if (!hasLiveSnapshot) {
+    return <DashboardFeedState feed={feed} />;
+  }
+
+  return <LiveDashboardApp feed={feed} onLogout={onLogout} />;
+}
+
+const DashboardFeedState = ({ feed }) => {
+  const unavailable = Boolean(feed.error || feed.data?.META?.state === "unavailable");
+  return (
+    <main className="feed-state-shell">
+      <div className="panel feed-state-card">
+        <div className="feed-state-heading">
+          <span className={`chip ${unavailable ? "fail" : "cyan"}`}><Icon name={unavailable ? "alert" : "activity"} /></span>
+          <div>
+            <h1>{unavailable ? "Live dashboard unavailable" : "Loading live dashboard"}</h1>
+            <p>{unavailable
+              ? "The sidecar did not return live data. Check the HTTPS proxy or TLS listener, then retry."
+              : "Waiting for the first collector snapshot; service health is not reported until real data arrives."}</p>
+          </div>
+        </div>
+        <div className="feed-skeleton" aria-hidden="true">
+          <span /><span /><span /><span />
+        </div>
+        <button className="btn" type="button" onClick={() => feed.refresh().catch(() => {})} disabled={feed.loading}>
+          <Icon name="refresh" />{feed.loading ? "Loading..." : "Retry"}
+        </button>
+      </div>
+    </main>
+  );
+};
+
+function LiveDashboardApp({ feed, onLogout }) {
+  MOCK = feed.data;
   const [density, setDensity] = useState("compact");
   const [theme, setTheme] = useState("dark");
   const [paletteOpen, setPaletteOpen] = useState(false);

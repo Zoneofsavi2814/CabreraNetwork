@@ -1,5 +1,22 @@
 import { useCallback, useEffect, useMemo, useState } from "react";
-import { DEFAULT_DASHBOARD } from "./mockData.jsx";
+
+export const EMPTY_DASHBOARD = {
+  HISTORY: {
+    cpu: [], ram: [], temp: [], ssdPct: [], dnsPerMin: [], loadAvg: [],
+    netIn: [], netOut: [], dnsTotal: [], dnsBlocked: [], diskRead: [], diskWrite: [],
+  },
+  KPIS: [],
+  SERVICES: [],
+  WEB_APPS: [],
+  ADGUARD: { queries: 0, blocked: 0, blockRatio: 0, upstream: "unavailable", topDomains: [], topClients: [], status: "unavailable" },
+  K3S: { version: "unavailable", nodes: [], podsByNs: [], events: [], workloads: [] },
+  STORAGE: {},
+  LOGS: [],
+  HOST: {},
+  TOPOLOGY: { clients: [], counts: {}, groups: [], aps: [], routerCollector: { state: "loading" } },
+  OPS_CENTER: { summary: { status: "unknown", message: "Operations checks are loading" }, cadences: [], events: [] },
+  META: { state: "loading", message: "Waiting for live collectors" },
+};
 
 const apiFetch = async (url, options = {}) => {
   const res = await fetch(url, {
@@ -19,17 +36,18 @@ const apiFetch = async (url, options = {}) => {
 
 const mergeDashboard = (base, incoming) => {
   if (!incoming || typeof incoming !== "object") return base;
-  const next = { ...base };
+  const previous = base || EMPTY_DASHBOARD;
+  const next = { ...previous };
   for (const [key, value] of Object.entries(incoming)) {
     if (
       value &&
       typeof value === "object" &&
       !Array.isArray(value) &&
-      base[key] &&
-      typeof base[key] === "object" &&
-      !Array.isArray(base[key])
+      previous[key] &&
+      typeof previous[key] === "object" &&
+      !Array.isArray(previous[key])
     ) {
-      next[key] = { ...base[key], ...value };
+      next[key] = { ...previous[key], ...value };
     } else {
       next[key] = value;
     }
@@ -38,7 +56,7 @@ const mergeDashboard = (base, incoming) => {
 };
 
 export const useDashboardFeed = () => {
-  const [data, setData] = useState(DEFAULT_DASHBOARD);
+  const [data, setData] = useState(null);
   const [connected, setConnected] = useState(false);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState(null);
@@ -116,6 +134,9 @@ export const fetchLogs = ({ sourceType, id, lines = 160, namespace, container, k
 export const getSession = () => apiFetch("/api/session");
 
 export const login = (password) => {
+  if (typeof window !== "undefined" && window.location.protocol !== "https:") {
+    return Promise.reject(new Error("HTTPS is required before entering the Pi4 password."));
+  }
   return apiFetch("/api/login", {
     method: "POST",
     body: JSON.stringify({ password }),
