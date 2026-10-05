@@ -41,6 +41,7 @@ const HISTORY = {
   temp:       seriesBound(303, 60, 48, 56, 0.80),
   ssdPct:     seriesBound(404, 60, 21.0, 21.2, 0.95),
   dnsPerMin:  seriesBound(505, 60, 220, 380),
+  pods: Array(60).fill(6).map((v, i) => i > 45 ? 7 : v),
   loadAvg:    seriesBound(606, 60, 0.35, 0.85),
   netIn:      seriesBound(707, 60, 80, 420),
   netOut:     seriesBound(808, 60, 40, 220),
@@ -56,6 +57,7 @@ const KPIS = [
   { id: "temp",  label: "Temperature", glyph: "thermo",         value: 52.4,  suffix: "°C", status: "ok",   delta: "+0.8°", deltaTone: "neutral", history: HISTORY.temp },
   { id: "ssd",   label: "Data HDD Used", glyph: "disk",          value: 21.1,  suffix: "%",  status: "ok",   delta: "+0.1%", deltaTone: "neutral", history: HISTORY.ssdPct, sub: "380 / 1800 GB" },
   { id: "dns",   label: "DNS / min",   glyph: "dns",            value: 307,   suffix: "",   status: "ok",   delta: "+12%",  deltaTone: "up",      history: HISTORY.dnsPerMin },
+  { id: "pods",  label: "Pods",        glyph: "brandCubes",     value: "7/7", suffix: "",   status: "ok",   delta: "0",     deltaTone: "neutral", history: HISTORY.pods },
 ];
 
 const SERVICES = [
@@ -98,6 +100,8 @@ const ADGUARD = {
 };
 
 const K3S = {
+  runtime: "containerd",
+  pods: [],
   version: "v1.30.4+k3s1",
   nodes: [
     { name: "pi4", role: "control-plane,master", version: "v1.30.4+k3s1", ready: true, age: "16d" },
@@ -126,10 +130,10 @@ const STORAGE = {
 };
 
 const LOGS = [
-  { t: "12:04:11", src: "k3s",     level: "info", msg: "Started container web-deployment-7c4d" },
+  { t: "12:04:11", src: "k3s",     level: "info", msg: "Started pod web-deployment-7c4d" },
   { t: "12:01:53", src: "AdGuard", level: "info", msg: "Blocked doubleclick.net for 192.168.0.42" },
   { t: "12:00:14", src: "AdGuard", level: "info", msg: "Blocked googlesyndication.com for 192.168.0.55" },
-  { t: "11:58:02", src: "k3s",     level: "info", msg: "Created container web in pod web-deployment-7c4d" },
+  { t: "11:58:02", src: "k3s",     level: "info", msg: "Created pod web-deployment-7c4d" },
   { t: "11:42:18", src: "kubelet", level: "info", msg: "Successfully assigned monitoring/grafana-agent to pi4" },
   { t: "11:39:42", src: "smbd",    level: "info", msg: "192.168.0.55 connected to share nas (user nasuser)" },
 ];

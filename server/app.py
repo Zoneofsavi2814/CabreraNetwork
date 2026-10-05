@@ -611,31 +611,6 @@ def safe_int(value, default: int = 0) -> int:
         return default
 
 
-def parse_bytes_pair(text: str) -> tuple[float, float]:
-    parts = [p.strip() for p in str(text).split("/")]
-    if len(parts) != 2:
-        return 0.0, 0.0
-    return parse_size_mb(parts[0]), parse_size_mb(parts[1])
-
-
-def parse_size_mb(value: str) -> float:
-    value = value.strip()
-    m = re.match(r"([0-9.]+)\s*([KMGT]?B)?", value, re.I)
-    if not m:
-        return 0.0
-    num = float(m.group(1))
-    unit = (m.group(2) or "B").upper()
-    if unit == "KB":
-        return num / 1024
-    if unit == "MB":
-        return num
-    if unit == "GB":
-        return num * 1024
-    if unit == "TB":
-        return num * 1024 * 1024
-    return num / (1024 * 1024)
-
-
 def uptime_label(seconds: float) -> str:
     seconds = max(0, int(seconds))
     days, rem = divmod(seconds, 86400)
@@ -1100,6 +1075,7 @@ class DashboardCache:
             "temp": deque([0.0] * HISTORY_LEN, maxlen=HISTORY_LEN),
             "ssdPct": deque([0.0] * HISTORY_LEN, maxlen=HISTORY_LEN),
             "dnsPerMin": deque([0.0] * HISTORY_LEN, maxlen=HISTORY_LEN),
+            "pods": deque([0.0] * HISTORY_LEN, maxlen=HISTORY_LEN),
             "loadAvg": deque([0.0] * HISTORY_LEN, maxlen=HISTORY_LEN),
             "netIn": deque([0.0] * HISTORY_LEN, maxlen=HISTORY_LEN),
             "netOut": deque([0.0] * HISTORY_LEN, maxlen=HISTORY_LEN),
@@ -1167,7 +1143,7 @@ class DashboardCache:
                 "topClients": [],
                 "status": "unknown",
             },
-            "K3S": {"version": "unknown", "nodes": [], "podsByNs": [], "events": [], "workloads": []},
+            "K3S": {"version": "unknown", "runtime": "containerd", "nodes": [], "podsByNs": [], "pods": [], "events": [], "workloads": []},
             "STORAGE": {},
             "TOPOLOGY": {
                 "router": {"name": ROUTER_NAME, "ip": ROUTER_IP, "model": "Archer BE400"},
@@ -1382,6 +1358,9 @@ class DashboardCache:
         host = self.snapshot_data.get("HOST", {})
         storage = self.snapshot_data.get("STORAGE", {})
         adguard = self.snapshot_data.get("ADGUARD", {})
+        pods = self.snapshot_data.get("K3S", {}).get("pods", [])
+        running = sum(1 for p in pods if p.get("status") == "running")
+        total = len(pods)
         ssd = storage.get("ssd", {"used": 0, "total": 1})
         ssd_pct = (ssd["used"] / max(1, ssd["total"])) * 100
         return [
@@ -1390,6 +1369,7 @@ class DashboardCache:
             self.kpi("temp", "Temperature", "thermo", host.get("tempC", 0), "°C", "ok" if host.get("tempC", 0) < 70 else "warn", self.histories["temp"]),
             self.kpi("ssd", f"{ssd.get('label', 'Data HDD')} Used", "disk", round(ssd_pct, 1), "%", "ok" if ssd_pct < 80 else "warn", self.histories["ssdPct"], f"{ssd.get('used', 0)} / {ssd.get('total', 0)} GB"),
             self.kpi("dns", "DNS / min", "dns", round(self.histories["dnsPerMin"][-1]), "", "ok", self.histories["dnsPerMin"]),
+            self.kpi("pods", "Pods", "brandCubes", f"{running}/{total}", "", "ok" if running == total else "warn", self.histories["pods"]),
         ]
 
     def kpi(self, id_: str, label: str, glyph: str, value, suffix: str, status: str, history, sub: str | None = None) -> dict:
@@ -3444,9 +3424,11 @@ printf 'throttle=%s\\n' "$throttle"
 
         nodes = []
         version = "unknown"
+        runtime = "containerd"
         for item in items_by_kind["Node"]:
             info = item.get("status", {}).get("nodeInfo", {})
             version = info.get("kubeletVersion", version)
+            runtime = info.get("containerRuntimeVersion", runtime)
             ready = any(c.get("type") == "Ready" and c.get("status") == "True" for c in item.get("status", {}).get("conditions", []))
             roles = item.get("metadata", {}).get("labels", {})
             role_names = [k.rsplit("/", 1)[-1] for k in roles if k.startswith("node-role.kubernetes.io/")]
@@ -3455,16 +3437,61 @@ printf 'throttle=%s\\n' "$throttle"
                     "name": item.get("metadata", {}).get("name", "unknown"),
                     "role": ",".join(role_names) or "node",
                     "version": info.get("kubeletVersion", "unknown"),
+                    "runtime": info.get("containerRuntimeVersion", "containerd"),
                     "ready": ready,
                     "age": self.age_label(item.get("metadata", {}).get("creationTimestamp")),
                 }
             )
 
         ns_counts: dict[str, Counter] = {}
+        pods = []
         for item in items_by_kind["Pod"]:
+            meta = item.get("metadata", {})
+            spec = item.get("spec", {})
+            status_doc = item.get("status", {})
             ns = item.get("metadata", {}).get("namespace", "default")
-            phase = str(item.get("status", {}).get("phase", "Unknown")).lower()
+            phase = str(status_doc.get("phase", "Unknown")).lower()
             ns_counts.setdefault(ns, Counter())[phase] += 1
+            declared = [*spec.get("initContainers", []), *spec.get("containers", [])]
+            status_rows = [*status_doc.get("initContainerStatuses", []), *status_doc.get("containerStatuses", [])]
+            status_by_name = {row.get("name"): row for row in status_rows if row.get("name")}
+            containers = []
+            for container in declared:
+                name = str(container.get("name") or "container")
+                row = status_by_name.get(name, {})
+                state = row.get("state", {}) if isinstance(row.get("state"), dict) else {}
+                state_name = next(iter(state.keys()), phase) if state else phase
+                containers.append(
+                    {
+                        "name": name,
+                        "image": container.get("image", "unknown"),
+                        "ready": bool(row.get("ready", False)),
+                        "restarts": int(row.get("restartCount") or 0),
+                        "state": state_name,
+                    }
+                )
+            images = []
+            for row in containers:
+                image = row.get("image") or "unknown"
+                if image not in images:
+                    images.append(image)
+            ready_count = sum(1 for row in containers if row.get("ready"))
+            pods.append(
+                {
+                    "id": meta.get("name", "unknown"),
+                    "name": meta.get("name", "unknown"),
+                    "namespace": ns,
+                    "node": spec.get("nodeName", ""),
+                    "podIP": status_doc.get("podIP", ""),
+                    "status": phase,
+                    "status_tone": status_tone(phase),
+                    "ready": f"{ready_count}/{len(containers)}",
+                    "restarts": sum(int(row.get("restarts") or 0) for row in containers),
+                    "age": self.age_label(meta.get("creationTimestamp")),
+                    "image": ", ".join(images) if images else "unknown",
+                    "containers": containers,
+                }
+            )
         pods_by_ns = [
             {"ns": ns, "running": counts["running"], "pending": counts["pending"], "failed": counts["failed"]}
             for ns, counts in sorted(ns_counts.items())
@@ -3498,6 +3525,8 @@ printf 'throttle=%s\\n' "$throttle"
                 ns = meta.get("namespace", "default")
                 kind = kind_name.lower()
                 status = item.get("status", {})
+                pod_spec = item.get("spec", {}).get("template", {}).get("spec", {})
+                images = [c.get("image", "unknown") for c in pod_spec.get("containers", [])]
                 if kind_name == "DaemonSet":
                     ready = status.get("numberReady", 0)
                     desired = status.get("desiredNumberScheduled", 0)
@@ -3511,18 +3540,23 @@ printf 'throttle=%s\\n' "$throttle"
                         "name": meta.get("name", "unknown"),
                         "ready": ready,
                         "desired": desired,
+                        "image": ", ".join(images) if images else "unknown",
                         "rolloutAllowed": ns not in PROTECTED_NAMESPACES and kind in {"deployment", "statefulset", "daemonset"},
                     }
                 )
 
         with self.lock:
+            self.histories["pods"].append(sum(1 for pod in pods if pod.get("status") == "running"))
             self.snapshot_data["K3S"] = {
                 "version": version,
+                "runtime": runtime,
                 "nodes": nodes,
                 "podsByNs": pods_by_ns,
+                "pods": pods,
                 "events": events,
                 "workloads": workloads,
             }
+            self.snapshot_data["KPIS"] = self.kpis()
             self._touch_locked()
         return True
 
@@ -3574,6 +3608,16 @@ printf 'throttle=%s\\n' "$throttle"
                         self.serialized_revision = revision
                         self.serialized_payload = payload
                         return revision, payload
+
+    def known_pod(self, namespace: str, name: str, container: str = "") -> bool:
+        with self.lock:
+            for pod in self.snapshot_data.get("K3S", {}).get("pods", []):
+                if pod.get("namespace") != namespace or pod.get("name") != name:
+                    continue
+                if not container:
+                    return True
+                return any(row.get("name") == container for row in pod.get("containers", []))
+            return False
 
     def known_workload(self, namespace: str, kind: str, name: str) -> bool:
         with self.lock:
@@ -3810,8 +3854,10 @@ def api_logs():
         return jsonify({"title": "k3s events", "hint": "cached kubectl events", "text": text})
 
     if source_type == "k3s-pod":
-        if not all(SAFE_NAME_RE.match(v) for v in [namespace, id_]):
+        if not all(SAFE_NAME_RE.match(v) for v in [namespace, id_]) or (container and not SAFE_NAME_RE.match(container)):
             return jsonify({"error": "pod reference is invalid"}), 400
+        if not cache.known_pod(namespace, id_, container):
+            return jsonify({"error": "pod is not allowlisted"}), 400
         argv = ["/usr/local/bin/kubectl", "logs", "-n", namespace, id_, "--tail", str(lines)]
         if container and SAFE_NAME_RE.match(container):
             argv.extend(["-c", container])

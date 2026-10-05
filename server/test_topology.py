@@ -254,5 +254,31 @@ class TopologyCollectorTests(unittest.TestCase):
         self.assertNotIn("ip:192.0.2.254", cleared["devices"])
 
 
+class K3sSnapshotTests(unittest.TestCase):
+    def test_update_k3s_tracks_pods_runtime_and_kpi(self):
+        cache = appmod.DashboardCache()
+
+        inventory = {"items": [
+            {"kind": "Node", "metadata": {"name": "pi4"}, "status": {
+                "nodeInfo": {"containerRuntimeVersion": "containerd://2.2.3-k3s1"},
+                "conditions": [{"type": "Ready", "status": "True"}],
+            }},
+            {"kind": "Pod", "metadata": {"name": "grid-abc", "namespace": "homelab"},
+             "spec": {"nodeName": "pi4", "containers": [{"name": "grid", "image": "localhost/grid:v1"}]},
+             "status": {"phase": "Running", "containerStatuses": [
+                 {"name": "grid", "ready": True, "restartCount": 1, "state": {"running": {}}},
+             ]}},
+        ]}
+        with patch.object(cache.k3s_client, "get_inventory", return_value=inventory):
+            self.assertTrue(cache.update_k3s())
+
+        snapshot = cache.snapshot()
+        self.assertEqual(snapshot["K3S"]["runtime"], "containerd://2.2.3-k3s1")
+        self.assertEqual(snapshot["K3S"]["pods"][0]["namespace"], "homelab")
+        self.assertEqual(snapshot["K3S"]["pods"][0]["containers"][0]["name"], "grid")
+        self.assertEqual(snapshot["KPIS"][-1]["label"], "Pods")
+        self.assertEqual(snapshot["KPIS"][-1]["value"], "1/1")
+
+
 if __name__ == "__main__":
     unittest.main()

@@ -74,7 +74,7 @@
 
 ## 2026-05-16 Repository Setup
 
-- Canonical Mac source now lives at `/Users/christophercabrera/Desktop/GitlabRepos/CabreraNetwork`.
+- Canonical Mac source now lives at `/Users/christophercabrera/Desktop/GitHub/CabreraNetwork`.
 - Original working source was copied from `/Users/christophercabrera/Desktop/Sandbox/RaspberryPi4/Rp4`.
 - Git remote is `git@gitlab.com:quintero4/CabreraNetwork.git` (GitLab).
 - Initial working branch for the imported dashboard is `initial`.
@@ -83,7 +83,7 @@
 
 - Cabrera Network is a Vite/React frontend plus a Flask sidecar backend.
 - The deployed Pi4 copy lives at `/opt/pi4-noc` and is managed by `pi4-noc.service`.
-- The service binds to `0.0.0.0:80`; LAN URL is `http://192.168.0.101/`.
+- The service binds to `0.0.0.0:80`; LAN URLs are `http://192.168.0.101/` and `http://cabrera.home.arpa/`.
 - The service name, install path, and environment variable prefix remain `pi4-noc` / `PI4_NOC_*` for compatibility, even though the UI is branded Cabrera Network.
 - The frontend entrypoints are `src/main.jsx` and `src/App.jsx`; backend entrypoint is `server/app.py`.
 - Privileged read/actions are centralized through `server/sudo_ops.py` and installed with `/etc/sudoers.d/pi4-noc`.

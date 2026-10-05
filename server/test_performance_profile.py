@@ -80,6 +80,7 @@ class CollectorPerformanceTests(unittest.TestCase):
                 "temp",
                 "ssdPct",
                 "dnsPerMin",
+                "pods",
                 "loadAvg",
                 "netIn",
                 "netOut",

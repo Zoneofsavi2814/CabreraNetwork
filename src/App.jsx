@@ -54,6 +54,15 @@ const truncate = (value, max = 18) => {
   return text.length > max ? `${text.slice(0, Math.max(0, max - 3))}...` : text;
 };
 
+const defaultImageRegistry = ["dock", "er.io/"].join("");
+const imageDisplayName = (value) => {
+  const registryPattern = new RegExp(`^${defaultImageRegistry}(library/)?`);
+  return String(value || "unknown")
+    .split(", ")
+    .map((image) => image.replace(registryPattern, ""))
+    .join(", ");
+};
+
 const useMediaQuery = (query) => {
   const [matches, setMatches] = useState(() => (
     typeof window === "undefined" ? false : window.matchMedia(query).matches
@@ -859,7 +868,7 @@ const K3sPanel = () => {
           <span className="chip ok"><Icon name="brandCubes" /></span>
           <div>
             <div style={{ fontSize: 13, fontWeight: 500 }}>k3s · {k.version}</div>
-            <div className="mono" style={{ fontSize: 10, color: "var(--slate-2)" }}>k3s.service · single-node</div>
+            <div className="mono" style={{ fontSize: 10, color: "var(--slate-2)" }}>k3s.service · single-node · {k.runtime || "containerd"}</div>
           </div>
         </div>
         <span className="pill ok"><span className="dot ok" /> control-plane ready</span>
@@ -924,6 +933,76 @@ const K3sPanel = () => {
         </div>
       </div>
     </div>
+  );
+};
+
+// ------------------------------------------------------------- k3s pods
+const PodCard = ({ pod, onAction }) => {
+  const containers = pod.containers || [];
+  const primaryContainer = containers.length === 1 ? containers[0].name : "";
+  return (
+  <div className="row-hover pod-card" style={{
+    border: "1px solid var(--hairline)", borderRadius: 10,
+    padding: "12px 14px",
+    background: "rgba(148,163,184,0.02)",
+    display: "grid", gridTemplateColumns: "auto 1fr auto", gap: 12, alignItems: "center",
+  }}>
+    <span className={`chip ${pod.status_tone}`}><Icon name="brandCubes" /></span>
+    <div style={{ minWidth: 0 }}>
+      <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
+        <span className="mono" style={{ fontSize: 13, color: "var(--fg)", whiteSpace: "nowrap", overflow: "hidden", textOverflow: "ellipsis" }}>
+          {pod.namespace}/{pod.name || pod.id}
+        </span>
+        <span className={`pill ${pod.status_tone}`} style={{ height: 18, fontSize: 10, padding: "0 6px" }}>
+          <span className={`dot ${pod.status_tone}`} />{pod.status}
+        </span>
+      </div>
+      <div className="mono" style={{ fontSize: 10, color: "var(--slate-2)", marginTop: 2,
+        whiteSpace: "nowrap", overflow: "hidden", textOverflow: "ellipsis" }}>
+        {imageDisplayName(pod.image)}
+      </div>
+      <div className="pod-stats" style={{ display: "flex", gap: 14, marginTop: 8, fontSize: 11 }}>
+        <Stat label="ready"    value={pod.ready || "-"} />
+        <Stat label="restarts" value={pod.restarts || 0} tone={pod.restarts > 0 ? "warn" : null} />
+        <Stat label="age"      value={pod.age || "?"} />
+        <Stat label="node"     value={pod.node || "-"} />
+      </div>
+    </div>
+    <div style={{ display: "flex", gap: 4 }}>
+      <button className="chip-btn" title="Logs" onClick={() => onAction("logs", pod, primaryContainer)}><Icon name="logs" /></button>
+    </div>
+  </div>
+  );
+};
+
+const Stat = ({ label, value, tone }) => (
+  <div style={{ display: "flex", flexDirection: "column", lineHeight: 1.1 }}>
+    <span style={{ fontSize: 9, color: "var(--slate-2)", letterSpacing: "0.08em", textTransform: "uppercase" }}>{label}</span>
+    <span className="mono" style={{ fontSize: 12, color: tone === "warn" ? "var(--amber)" : "var(--fg)", marginTop: 2 }}>{value}</span>
+  </div>
+);
+
+const K3sPodsPanel = ({ onAction }) => {
+  const k = MOCK.K3S || {};
+  const pods = k.pods || [];
+  const running = pods.filter((pod) => pod.status === "running").length;
+  return (
+  <div className="panel">
+    <div className="panel-head">
+      <div style={{ display: "flex", alignItems: "center", gap: 10 }}>
+        <span className="chip ok"><Icon name="brandCubes" /></span>
+        <div>
+          <div style={{ fontSize: 13, fontWeight: 500 }}>k3s pods</div>
+          <div className="mono" style={{ fontSize: 10, color: "var(--slate-2)" }}>{k.runtime || "containerd"} · workloads managed by Kubernetes</div>
+        </div>
+      </div>
+      <span className={`pill ${running === pods.length ? "ok" : "warn"}`}><span className={`dot ${running === pods.length ? "ok" : "warn"}`} /> {running}/{pods.length} running</span>
+    </div>
+    <div className="workload-grid" style={{ padding: "var(--s-5)", display: "grid", gridTemplateColumns: "1fr 1fr", gap: 12 }}>
+      {pods.length === 0 && <span style={{ color: "var(--slate-2)", fontSize: 11 }}>No pods discovered yet</span>}
+      {pods.map((pod) => <PodCard key={`${pod.namespace}/${pod.name || pod.id}`} pod={pod} onAction={onAction} />)}
+    </div>
+  </div>
   );
 };
 
@@ -1545,6 +1624,18 @@ const CommandPalette = ({ open, onClose, onRun, data }) => {
     });
     // k3s extras
     g.find(x => x.id === "k3s")?.items.push({ id: "k3s.events", label: "View events", hint: "kubectl get events -A", kbd: KBD_HINTS["k3s.events"], kind: "info", icon: "logs", action: { kind: "k3s-events" } });
+    // k3s pod logs
+    g.push({
+      id: "pods", title: "k3s Pods", glyph: "brandCubes",
+      items: (data.K3S?.pods || []).map((pod) => ({
+        id: `pod.${pod.namespace}.${pod.name || pod.id}.logs`,
+        label: `View logs · ${pod.namespace}/${pod.name || pod.id}`,
+        hint: imageDisplayName(pod.image),
+        kind: "info",
+        icon: "logs",
+        action: { kind: "logs-pod", pod },
+      })),
+    });
     g.push({
       id: "web-apps", title: "Web Apps", glyph: "external",
       items: (data.WEB_APPS || []).map((app) => ({
@@ -1616,7 +1707,7 @@ const CommandPalette = ({ open, onClose, onRun, data }) => {
             value={q}
             onChange={(e) => { setQ(e.target.value); setCursor(0); }}
             onKeyDown={onKey}
-            placeholder="Search services, containers, actions…"
+            placeholder="Search services, pods, actions…"
             style={{
               flex: 1, background: "transparent", border: "none", outline: "none",
               color: "var(--fg)", fontFamily: "var(--sans)", fontSize: 14,
@@ -2412,14 +2503,15 @@ const MobileOverview = ({ feed, banner, alertCount, tickedKpi, setKpiDetail, onR
   </div>
 );
 
-const MobileServices = ({ onServiceAction }) => (
+const MobileServices = ({ onServiceAction, onPodAction }) => (
   <div className="mobile-tab-stack">
     <ServicesPanel services={MOCK.SERVICES} onAction={onServiceAction} />
     <K3sPanel />
+    <K3sPodsPanel onAction={onPodAction} />
   </div>
 );
 
-const MobileLogsPanel = ({ services, jobs, onOpenLogs, onJobLogs }) => (
+const MobileLogsPanel = ({ services, pods, jobs, onOpenLogs, onJobLogs }) => (
   <div className="mobile-tab-stack">
     <div className="panel">
       <div className="panel-head">
@@ -2454,6 +2546,32 @@ const MobileLogsPanel = ({ services, jobs, onOpenLogs, onJobLogs }) => (
           </span>
           <Icon name="logs" />
         </button>
+      </div>
+    </div>
+    <div className="panel">
+      <div className="panel-head">
+        <div className="panel-title">Pod logs</div>
+        <span className="pill">{pods.length} pods</span>
+      </div>
+      <div className="mobile-log-list">
+        {pods.map((pod) => {
+          const onlyContainer = pod.containers?.length === 1 ? pod.containers[0].name : "";
+          return (
+          <button
+            key={`${pod.namespace}/${pod.name || pod.id}`}
+            type="button"
+            className="mobile-log-row"
+            onClick={() => onOpenLogs({ sourceType: "k3s-pod", namespace: pod.namespace, id: pod.name || pod.id, container: onlyContainer, lines: 180 }, `${pod.namespace}/${pod.name || pod.id} logs`, "kubectl logs")}
+          >
+            <span className={`chip ${pod.status_tone}`}><Icon name="brandCubes" /></span>
+            <span>
+              <span className="mobile-row-title">{pod.namespace}/{pod.name || pod.id}</span>
+              <span className="mono mobile-row-sub">{imageDisplayName(pod.image)}</span>
+            </span>
+            <Icon name="logs" />
+          </button>
+          );
+        })}
       </div>
     </div>
     <div className="panel">
@@ -2495,6 +2613,7 @@ const MobileDashboard = ({
   onRefresh,
   onOpenPalette,
   onServiceAction,
+  onPodAction,
   onOpsAction,
   onJobLogs,
   onOpenLogs,
@@ -2530,7 +2649,7 @@ const MobileDashboard = ({
         <MobileTopologyPanel onSaved={feed.refresh} onToast={toasts.push} />
       )}
       {activeSection === "services" && (
-        <MobileServices onServiceAction={onServiceAction} />
+        <MobileServices onServiceAction={onServiceAction} onPodAction={onPodAction} />
       )}
       {activeSection === "ops" && (
         <div className="mobile-tab-stack mobile-ops-stack">
@@ -2540,6 +2659,7 @@ const MobileDashboard = ({
       {activeSection === "logs" && (
         <MobileLogsPanel
           services={MOCK.SERVICES}
+          pods={MOCK.K3S?.pods || []}
           jobs={jobs}
           onOpenLogs={onOpenLogs}
           onJobLogs={onJobLogs}
@@ -2726,10 +2846,18 @@ function LiveDashboardApp({ feed, onLogout }) {
     }
   };
 
+  const handlePodAction = (kind, pod, container = "") => {
+    if (kind === "logs") {
+      const podName = pod.name || pod.id;
+      openLogs({ sourceType: "k3s-pod", namespace: pod.namespace, id: podName, container, lines: 180 }, `${pod.namespace}/${podName} logs`, "kubectl logs");
+    }
+  };
+
   const handlePaletteAction = (action) => {
     if (action.kind === "restart") handleServiceAction("restart", action.svc);
     else if (action.kind === "logs") handleServiceAction("logs", action.svc);
     else if (action.kind === "open") handleServiceAction("open", action.svc);
+    else if (action.kind === "logs-pod")          handlePodAction("logs", action.pod, action.pod?.containers?.length === 1 ? action.pod.containers[0].name : "");
     else if (action.kind === "open-url")          { toasts.push(`Opening ${action.label}...`, "cyan"); window.open(action.url, "_blank", "noopener,noreferrer"); }
     else if (action.kind === "k3s-events")        openLogs({ sourceType: "k3s-events", id: "events", lines: 120 }, "k3s events", "kubectl get events -A");
     else if (action.kind === "refresh")           doRefresh();
@@ -2773,6 +2901,7 @@ function LiveDashboardApp({ feed, onLogout }) {
           onRefresh={doRefresh}
           onOpenPalette={() => setPaletteOpen(true)}
           onServiceAction={handleServiceAction}
+          onPodAction={handlePodAction}
           onOpsAction={handleOpsAction}
           onJobLogs={handleJobLogs}
           onOpenLogs={openLogs}
@@ -2814,6 +2943,9 @@ function LiveDashboardApp({ feed, onLogout }) {
 
             {/* k3s panel */}
             <K3sPanel />
+
+            {/* k3s pod logs */}
+            <K3sPodsPanel onAction={handlePodAction} />
 
             {/* Direct ops controls */}
             <OpsPanel

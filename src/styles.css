@@ -840,6 +840,9 @@
     .ops-counts {
       justify-content: flex-start;
     }
+    .workload-grid {
+      grid-template-columns: minmax(0, 1fr) !important;
+    }
     .webapps-grid {
       grid-template-columns: repeat(2, minmax(0, 1fr)) !important;
     }
@@ -1203,6 +1206,7 @@
     .charts-grid,
     .adguard-hero-grid,
     .k3s-grid,
+    .workload-grid,
     .webapps-grid,
     .ops-grid,
     .ops-cadence-grid,
@@ -1267,6 +1271,17 @@
       width: 100% !important;
       min-height: 44px;
       font-size: 13px;
+    }
+    .pod-card {
+      grid-template-columns: auto minmax(0, 1fr) !important;
+    }
+    .pod-card > div:last-child {
+      grid-column: 1 / -1;
+      justify-content: flex-end;
+    }
+    .pod-stats {
+      flex-wrap: wrap;
+      gap: 10px !important;
     }
     .mobile-ops-stack {
       gap: 8px;
@@ -1356,6 +1371,10 @@
     .mobile-bottom-nav button {
       font-size: 9px;
       min-height: 52px;
+    }
+    .mobile-bottom-nav svg {
+      width: 16px;
+      height: 16px;
     }
   }
 

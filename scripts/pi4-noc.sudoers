@@ -1,6 +1,6 @@
 # Cabrera Network privileged operations are centralized in this root-owned helper.
 # The helper performs its own fixed allowlist validation before invoking
-# systemctl, journalctl, or rootful podman.
+# systemctl or journalctl.
 Defaults!/opt/pi4-noc/server/sudo_ops.py !syslog
 Defaults!/opt/pi4-noc/server/sudo_ops.py !pam_session
 pi4 ALL=(root) NOPASSWD: /opt/pi4-noc/server/sudo_ops.py *
